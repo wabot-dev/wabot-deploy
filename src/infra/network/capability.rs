@@ -40,15 +40,17 @@ fn key(capability: Capability) -> &'static str {
         Capability::Store => "node.provides.store",
         Capability::Manage => "node.provides.manage",
         Capability::Dns => "node.provides.dns",
+        Capability::Exit => "node.provides.exit",
     }
 }
 
 /// Whether this node offers a capability at all.
 ///
-/// **Unset means yes**, except for `Dns`. Every node that existed before
-/// the settings did both, and a default of "no" would take a working
-/// network off the air to introduce a setting. `Dns` came later and opens
-/// a port to the internet, so for it the deliberate act is turning it on.
+/// **Unset means yes**, except for `Dns` and `Exit`. Every node that
+/// existed before the settings did both, and a default of "no" would take
+/// a working network off the air to introduce a setting. Those two came
+/// later and face the internet, so for them the deliberate act is turning
+/// it on.
 pub async fn provides(database: &SqliteDatabase, capability: Capability) -> bool {
     match crate::infra::node::settings::read(database, key(capability)).await {
         Ok(Some(stored)) => {

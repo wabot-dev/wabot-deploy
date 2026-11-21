@@ -7,13 +7,15 @@ pub enum ProjectSettingsTab {
     General,
     Environment,
     Allowlists,
+    Internet,
 }
 
 impl ProjectSettingsTab {
-    const ALL: [ProjectSettingsTab; 3] = [
+    const ALL: [ProjectSettingsTab; 4] = [
         ProjectSettingsTab::General,
         ProjectSettingsTab::Environment,
         ProjectSettingsTab::Allowlists,
+        ProjectSettingsTab::Internet,
     ];
 
     pub fn path(self, project: &str) -> String {
@@ -21,6 +23,7 @@ impl ProjectSettingsTab {
             ProjectSettingsTab::General => format!("/projects/{project}/settings"),
             ProjectSettingsTab::Environment => format!("/projects/{project}/settings/environment"),
             ProjectSettingsTab::Allowlists => format!("/projects/{project}/settings/allowlists"),
+            ProjectSettingsTab::Internet => format!("/projects/{project}/settings/internet"),
         }
     }
 
@@ -29,6 +32,7 @@ impl ProjectSettingsTab {
             ProjectSettingsTab::General => t("General"),
             ProjectSettingsTab::Environment => t("Shared environment"),
             ProjectSettingsTab::Allowlists => t("Shared allowlists"),
+            ProjectSettingsTab::Internet => t("Internet"),
         }
     }
 }

@@ -346,6 +346,16 @@ pub struct Directory {
     /// copies: the nodes holding one, the owner among them.
     pub members: Vec<String>,
     pub services: Vec<Listed>,
+    /// Where the project's containers may connect past its own network, as
+    /// the owner's console reads it. Absent from a withdrawal, which says
+    /// nothing about the project, and from an owner older than
+    /// [`EGRESS_SINCE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<String>,
+    /// The overlay addresses of the nodes the project leaves through, read
+    /// only beside `egress`: empty is each copy through its own node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exits: Vec<String>,
 }
 
 /// One service, as the nodes that hold none of it need to know it.
@@ -378,6 +388,15 @@ pub const DIRECTORY_SINCE: &str = "0.44.0";
 
 pub fn opens_doors(version: Option<&str>) -> bool {
     at_least(version, DIRECTORY_SINCE)
+}
+
+/// The first release that enforces the destinations a directory carries.
+/// A node older than this runs a project's copies with no list at all, so
+/// a list that is not anywhere is refused while one holds a copy.
+pub const EGRESS_SINCE: &str = "0.44.0";
+
+pub fn enforces_egress(version: Option<&str>) -> bool {
+    at_least(version, EGRESS_SINCE)
 }
 
 /// The first release whose edges read [`Edge::allowed`].

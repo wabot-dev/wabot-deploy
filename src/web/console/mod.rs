@@ -48,8 +48,8 @@ use crate::features::people::{
     tenant_people_ui_controller,
 };
 use crate::features::projects::{
-    allowlist_set_rest_controller, env_group_rest_controller, project_rest_controller,
-    project_ui_controller,
+    allowlist_set_rest_controller, egress_rest_controller, env_group_rest_controller,
+    project_rest_controller, project_ui_controller,
 };
 use crate::features::services::{
     service_redirect_rest_controller, service_redirect_ui_controller, service_rest_controller,
@@ -100,6 +100,7 @@ pub fn register(
         project_rest_controller::ProjectRestController,
         env_group_rest_controller::EnvGroupRestController,
         allowlist_set_rest_controller::AllowlistSetRestController,
+        egress_rest_controller::EgressRestController,
         go_ui_controller::GoUiController,
         reveal_ui_controller::RevealUiController,
         database_rest_controller::DatabaseRestController,
@@ -156,6 +157,7 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     let forms = allowlist_set_rest_controller::AllowlistSetRestController::register_routes(
         container, forms,
     );
+    let forms = egress_rest_controller::EgressRestController::register_routes(container, forms);
     let forms = store_rest_controller::StoreRestController::register_routes(container, forms);
     let forms = bucket_rest_controller::BucketRestController::register_routes(container, forms);
     let forms = service_rest_controller::ServiceRestController::register_routes(container, forms);

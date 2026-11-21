@@ -23,6 +23,7 @@ pub mod database;
 mod directory;
 pub mod dns;
 pub mod edge_withdrawals;
+pub mod egress;
 pub mod forwards;
 pub mod hosts;
 pub mod jobs;
@@ -551,7 +552,35 @@ impl Deployer {
         }
         followed.sort();
         followed.dedup();
-        Ok(crate::infra::isolation::Plan { bridges, followed })
+        let now = crate::infra::clock::now_ms();
+        let me = self.overlay_ip().await;
+        let mut egress = Vec::new();
+        for enforced in crate::infra::repositories::egress::by_network(&self.database).await? {
+            let learned = match enforced.destinations.is_anywhere() {
+                true => Vec::new(),
+                false => {
+                    crate::infra::repositories::egress::learned(
+                        &self.database,
+                        &enforced.project_id,
+                        now,
+                    )
+                    .await?
+                }
+            };
+            let elsewhere =
+                !enforced.exits.is_empty() && !me.is_some_and(|me| enforced.exits.contains(&me));
+            egress.push(crate::infra::isolation::Egress {
+                index: enforced.index,
+                destinations: enforced.destinations,
+                learned,
+                elsewhere,
+            });
+        }
+        Ok(crate::infra::isolation::Plan {
+            bridges,
+            followed,
+            egress,
+        })
     }
 
     /// Rewrite every local container's `/etc/hosts` from the rows.
@@ -3630,6 +3659,12 @@ impl Deployer {
     async fn tell_holders(&self, project: &Project, service: &Service, holding: Holding) {
         self.holders(project, service, holding, &Default::default())
             .await;
+        // Queued behind the placement, so a node given its first copy of a
+        // project learns where the project may connect before that copy can
+        // start, rather than on the next pass with the copy already out.
+        if let Err(error) = self.tell_directory(project).await {
+            tracing::warn!(project = %project.slug, %error, "could not tell the nodes where this project runs");
+        }
         // The names, at the same moments and for the same reason: a
         // deployment is what assigns a copy's overlay port, so it is
         // exactly when the upstream list a far node was given goes stale.

@@ -11,6 +11,7 @@ pub mod db;
 pub mod deploy;
 pub mod dns;
 pub mod edge;
+pub mod egress;
 pub mod firewall;
 pub mod garage;
 pub mod isolation;

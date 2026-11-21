@@ -1,5 +1,6 @@
 //! The door: one port on this node's overlay address, through which a node
-//! holding a copy of a project reaches another copy of it here.
+//! holding a copy of a project reaches another copy of it here, or leaves
+//! for the internet when this node is one of the project's exits.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -7,11 +8,13 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-use super::{read_line, Knock, DOOR_PORT, OPENED};
+use super::{read_line, Asked, DOOR_PORT, OPENED};
 use crate::infra::deploy::Deployer;
 
 const KNOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+/// The internet is further away than a copy on this node.
+pub(crate) const DIAL_OUT_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY: Duration = Duration::from_secs(10);
 
 /// Listen at the door for as long as the node runs. Bound to the overlay
@@ -65,11 +68,12 @@ async fn serve(deployer: &Deployer, listener: TcpListener) {
     }
 }
 
-/// One caller: its knock, whether it may, and then the copy.
+/// One caller: its knock, whether it may, and then the copy or the
+/// destination.
 pub(crate) async fn open(deployer: &Deployer, mut caller: TcpStream, peer: SocketAddr) {
-    let knock = match tokio::time::timeout(KNOCK_TIMEOUT, read_line(&mut caller)).await {
-        Ok(Ok(line)) => match serde_json::from_slice::<Knock>(&line) {
-            Ok(knock) => knock,
+    let asked = match tokio::time::timeout(KNOCK_TIMEOUT, read_line(&mut caller)).await {
+        Ok(Ok(line)) => match serde_json::from_slice::<Asked>(&line) {
+            Ok(asked) => asked,
             Err(error) => {
                 tracing::warn!(%peer, %error, "a knock that is not one");
                 return;
@@ -84,27 +88,33 @@ pub(crate) async fn open(deployer: &Deployer, mut caller: TcpStream, peer: Socke
             return;
         }
     };
-    let target = match deployer.admit(peer.ip(), &knock).await {
+    let (admitted, patience) = match &asked {
+        Asked::Reach(knock) => (deployer.admit(peer.ip(), knock).await, DIAL_TIMEOUT),
+        Asked::Leave(leave) => (
+            deployer.admit_leaving(peer.ip(), leave).await,
+            DIAL_OUT_TIMEOUT,
+        ),
+    };
+    let target = match admitted {
         Ok(target) => target,
         Err(reason) => {
-            tracing::warn!(%peer, project = %knock.project, service = %knock.service,
-                slot = knock.slot, port = knock.port, %reason, "refused at the door");
+            tracing::warn!(%peer, ?asked, %reason, "refused at the door");
             return;
         }
     };
-    let mut copy = match tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect(target)).await {
-        Ok(Ok(copy)) => copy,
+    let mut beyond = match tokio::time::timeout(patience, TcpStream::connect(target)).await {
+        Ok(Ok(beyond)) => beyond,
         Ok(Err(error)) => {
-            tracing::debug!(%target, %error, "the copy behind the door did not answer");
+            tracing::debug!(%target, %error, "nothing answered behind the door");
             return;
         }
         Err(_) => {
-            tracing::debug!(%target, "the copy behind the door did not answer in time");
+            tracing::debug!(%target, "nothing answered behind the door in time");
             return;
         }
     };
     if caller.write_all(OPENED).await.is_err() {
         return;
     }
-    let _ = tokio::io::copy_bidirectional(&mut caller, &mut copy).await;
+    let _ = tokio::io::copy_bidirectional(&mut caller, &mut beyond).await;
 }

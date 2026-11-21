@@ -55,8 +55,15 @@ pub enum Capability {
     ///
     /// Port 53 open to the internet is a decision about the machine rather
     /// than a favour to a peer, so a node does not provide it until its
-    /// operator turns it on — the one capability whose silence means no.
+    /// operator turns it on.
     Dns,
+    /// Carry a project's connections to the internet, under this node's
+    /// address (`docs/egress.md`, "Exits").
+    ///
+    /// Off until it is turned on, like `Dns`: what somebody's containers do
+    /// from here arrives at the rest of the internet as this machine, and
+    /// the complaints land on it.
+    Exit,
 }
 
 impl Capability {
@@ -67,6 +74,7 @@ impl Capability {
             Capability::Store => "store",
             Capability::Manage => "manage",
             Capability::Dns => "dns",
+            Capability::Exit => "exit",
         }
     }
 
@@ -83,15 +91,16 @@ impl Capability {
 
     /// Whether a node that never said provides it.
     pub fn provided_unless_refused(&self) -> bool {
-        !matches!(self, Capability::Dns)
+        !matches!(self, Capability::Dns | Capability::Exit)
     }
 
-    pub const ALL: [Capability; 5] = [
+    pub const ALL: [Capability; 6] = [
         Capability::Host,
         Capability::Edge,
         Capability::Store,
         Capability::Manage,
         Capability::Dns,
+        Capability::Exit,
     ];
 }
 

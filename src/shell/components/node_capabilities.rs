@@ -78,6 +78,9 @@ pub fn asking(capability: crate::domain::values::capability::Capability) -> &'st
         crate::domain::values::capability::Capability::Dns => {
             "Have this node answer DNS for its zones"
         }
+        crate::domain::values::capability::Capability::Exit => {
+            "Have its projects reach the internet through this node"
+        }
     }
 }
 
@@ -107,6 +110,11 @@ pub fn why(capability: crate::domain::values::capability::Capability) -> &'stati
              The records come from that node, and this one answers anybody \
              who asks about them on port 53."
         }
+        crate::domain::values::capability::Capability::Exit => {
+            "It can name this node as an exit of one of its projects, and that \
+             project's connections to the internet leave from this node's \
+             address. Only TCP, and never to this node's own network."
+        }
     }
 }
 
@@ -123,6 +131,9 @@ pub fn offering(capability: crate::domain::values::capability::Capability) -> &'
             "Update and restart that node from here"
         }
         crate::domain::values::capability::Capability::Dns => "Answer DNS for this node's zones",
+        crate::domain::values::capability::Capability::Exit => {
+            "Carry this node's projects to the internet"
+        }
     }
 }
 
@@ -142,6 +153,7 @@ pub fn doing(capability: crate::domain::values::capability::Capability) -> &'sta
             "Be kept up to date from elsewhere"
         }
         crate::domain::values::capability::Capability::Dns => "Answer DNS",
+        crate::domain::values::capability::Capability::Exit => "Carry projects to the internet",
     }
 }
 
@@ -182,6 +194,11 @@ pub fn doing_why(
         crate::domain::values::capability::Capability::Dns => {
             "Needs a domain that resolves here. A name server the world \
              cannot reach is one nobody can ask."
+        }
+        crate::domain::values::capability::Capability::Exit => {
+            "Other nodes' projects can leave for the internet from this \
+             node's address, over TCP. Off until it is turned on: what they \
+             do arrives at the rest of the internet as this machine."
         }
     }
 }

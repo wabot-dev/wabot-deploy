@@ -320,6 +320,18 @@ fn migrations() -> Vec<Migration> {
             "0080_reach",
             include_str!("../../migrations/0080_reach.sql"),
         ),
+        Migration::new(
+            "0081_egress",
+            include_str!("../../migrations/0081_egress.sql"),
+        ),
+        Migration::new(
+            "0082_egress_names",
+            include_str!("../../migrations/0082_egress_names.sql"),
+        ),
+        Migration::new(
+            "0083_exits",
+            include_str!("../../migrations/0083_exits.sql"),
+        ),
     ]
 }
 

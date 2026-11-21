@@ -205,6 +205,29 @@ impl Knock {
     }
 }
 
+/// What a node says at an exit's door: whose connection, and where to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leave {
+    pub project: String,
+    pub to: std::net::SocketAddrV4,
+}
+
+impl Leave {
+    pub(crate) fn line(&self) -> Vec<u8> {
+        let mut line = serde_json::to_vec(self).expect("a knock is plain data");
+        line.push(b'\n');
+        line
+    }
+}
+
+/// Either thing a door is asked.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Asked {
+    Leave(Leave),
+    Reach(Knock),
+}
+
 /// Read one line, a byte at a time, so nothing the caller sent after it is
 /// taken out of the stream.
 async fn read_line<R: tokio::io::AsyncRead + Unpin>(stream: &mut R) -> std::io::Result<Vec<u8>> {
@@ -371,5 +394,24 @@ mod tests {
 
         let mut endless = std::io::Cursor::new(vec![b'x'; KNOCK_LIMIT + 10]);
         assert!(read_line(&mut endless).await.is_err());
+    }
+
+    #[test]
+    fn a_door_tells_a_copy_asked_for_from_a_connection_leaving() {
+        let reach = Knock {
+            project: "shop".into(),
+            service: "orders".into(),
+            slot: 1,
+            port: 5432,
+        };
+        let leave = Leave {
+            project: "shop".into(),
+            to: "140.82.114.6:443".parse().expect("an address"),
+        };
+        let read = |line: Vec<u8>| {
+            serde_json::from_slice::<Asked>(&line[..line.len() - 1]).expect("a knock")
+        };
+        assert_eq!(read(reach.line()), Asked::Reach(reach));
+        assert_eq!(read(leave.line()), Asked::Leave(leave));
     }
 }

@@ -396,6 +396,49 @@ impl ProjectUiController {
 
         Ok(frame.render(body).into_view().into())
     }
+
+    #[view("/projects/:project/settings/internet")]
+    #[middleware(SessionMiddleware)]
+    async fn project_egress(&self, query: ProjectQuery) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        let Some((project, allowed)) =
+            access::find_project(&self.state.database, &account, &query.project).await?
+        else {
+            return Ok(Redirect::found("/projects?error=no+such+project").into());
+        };
+        if !allowed.may_deploy() {
+            return Ok(Redirect::found(format!("/projects/{}", project.slug)).into());
+        }
+        let destinations =
+            crate::infra::repositories::egress::of_project(&self.state.database, &project.id)
+                .await?;
+        let refused =
+            crate::infra::repositories::egress::refused(&self.state.database, &project.id, 20)
+                .await?;
+        let exits = exit_choices(&self.state, &project).await?;
+
+        let path = crate::features::projects::project_settings_tabs_component::ProjectSettingsTab::Internet
+            .path(&project.slug);
+        let frame = Frame::load(&self.state.database, &account, Section::Projects, path).await;
+        layout::head(&format!("{} settings", project.name));
+        let page = crate::features::projects::project_egress_page::ProjectEgress {
+            project: &project,
+            allowed,
+            destinations: &destinations,
+            exits: &exits,
+            refused: &refused,
+            query_error: query.error.as_deref(),
+        };
+        let body = crate::shell::texts::language::scoped(account.language, || {
+            crate::features::projects::project_egress_page::render(&page)
+                .render()
+                .into_inner()
+        });
+
+        Ok(frame.render(body).into_view().into())
+    }
 }
 
 async fn service_names(
@@ -418,4 +461,50 @@ fn named(names: &[(String, String)], ids: &[String]) -> Vec<String> {
                 .map(|(_, name)| name.clone())
         })
         .collect()
+}
+
+/// The nodes the owner may choose from, ticked where chosen, and any node
+/// still chosen that no longer lets this one name it.
+async fn exit_choices(
+    state: &ConsoleState,
+    project: &crate::domain::entities::project::Project,
+) -> UiResult<Vec<crate::features::projects::project_egress_page::ExitChoice>> {
+    use crate::features::projects::project_egress_page::ExitChoice;
+    let chosen = crate::infra::repositories::egress::exits_of(&state.database, &project.id).await?;
+    let candidates = match project.is_ours() {
+        true => state
+            .deployer
+            .exit_candidates()
+            .await
+            .map_err(|error| UiError::Internal(error.to_string()))?,
+        false => Vec::new(),
+    };
+    let mut choices: Vec<ExitChoice> = candidates
+        .iter()
+        .map(|candidate| ExitChoice {
+            node_id: Some(candidate.node_id.clone()),
+            name: candidate.name.clone(),
+            is_self: candidate.is_self,
+            chosen: chosen.contains(&candidate.address),
+        })
+        .collect();
+    let nodes = crate::infra::network::all(&state.database)
+        .await
+        .unwrap_or_default();
+    for address in chosen.iter().filter(|address| {
+        !candidates
+            .iter()
+            .any(|candidate| candidate.address == **address)
+    }) {
+        let known = nodes
+            .iter()
+            .find(|node| node.overlay_ip.as_deref() == Some(address.to_string().as_str()));
+        choices.push(ExitChoice {
+            node_id: None,
+            name: known.map_or_else(|| address.to_string(), |node| node.name.clone()),
+            is_self: known.is_some_and(|node| node.is_self),
+            chosen: true,
+        });
+    }
+    Ok(choices)
 }

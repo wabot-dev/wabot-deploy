@@ -111,14 +111,34 @@ impl Deployer {
                 copies,
             });
         }
-        if members.len() < 2 {
+        let exits = crate::infra::repositories::egress::exits_of(&self.database, &project.id)
+            .await?
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        for exit in exits.iter().filter(|exit| **exit != me) {
+            let carries = nodes
+                .values()
+                .find(|node| node.overlay_ip.as_ref() == Some(exit));
+            if let Some(node) =
+                carries.filter(|node| errand::enforces_egress(node.version.as_deref()))
+            {
+                recipients.insert(node.id.clone());
+            }
+        }
+        if members.len() < 2 && !exits.iter().any(|exit| *exit != me) {
             return Ok(None);
         }
+        let egress = crate::infra::repositories::egress::of_project(&self.database, &project.id)
+            .await?
+            .text();
         Ok(Some(Spread {
             directory: Directory {
                 project: project.name.clone(),
                 members: members.into_iter().collect(),
                 services: listed,
+                egress: Some(egress),
+                exits,
             },
             recipients,
         }))
@@ -140,7 +160,7 @@ impl Deployer {
         }
     }
 
-    async fn tell_directory(&self, project: &Project) -> DeployResult<()> {
+    pub(crate) async fn tell_directory(&self, project: &Project) -> DeployResult<()> {
         let subject = format!("directory:{}", project.id);
         let nothing = Directory {
             project: project.name.clone(),
@@ -173,6 +193,34 @@ impl Deployer {
             }
         }
         Ok(())
+    }
+
+    /// The nodes holding a copy of `project` that are too old to enforce
+    /// where it may connect, by name.
+    pub async fn too_old_for_egress(&self, project: &Project) -> DeployResult<Vec<String>> {
+        let nodes: BTreeMap<String, crate::infra::network::Node> =
+            crate::infra::network::all(&self.database)
+                .await?
+                .into_iter()
+                .map(|node| (node.id.clone(), node))
+                .collect();
+        let mut too_old = BTreeSet::new();
+        for service in services::all(&self.database, Some(&project.id)).await? {
+            for replica in replicas::of_service(&self.database, &service.id).await? {
+                let Some(node) = replica
+                    .node_id
+                    .as_ref()
+                    .filter(|_| !replica.evicted())
+                    .and_then(|node_id| nodes.get(node_id))
+                else {
+                    continue;
+                };
+                if !errand::enforces_egress(node.version.as_deref()) {
+                    too_old.insert(node.name.clone());
+                }
+            }
+        }
+        Ok(too_old.into_iter().collect())
     }
 
     /// What the hosts files of `project` need beyond its own rows: the
@@ -356,8 +404,10 @@ pub(crate) struct StoodIn {
 mod tests {
     use super::*;
     use crate::domain::entities::service::Service;
+    use crate::domain::values::destinations::Destinations;
     use crate::infra::config::Config;
     use crate::infra::network::Node;
+    use crate::infra::repositories::egress;
     use wabot::sqlite::SqliteDatabase;
 
     async fn node(database: &SqliteDatabase, id: &str, overlay: &str, version: &str) {
@@ -529,6 +579,97 @@ mod tests {
             },
             "a node holding nothing of the project is told it is in nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_holding_a_copy_is_told_again_where_the_project_may_connect() {
+        let (database, deployer, project, _) = spanning("0.44.0").await;
+        deployer.tell_directories().await;
+        let list = Destinations::parse("203.0.113.0/24:443").expect("a list");
+        egress::set(&database, &project.id, &list)
+            .await
+            .expect("set");
+        deployer.tell_directories().await;
+
+        let lists: Vec<Option<String>> = told(&database, "nd-far")
+            .await
+            .into_iter()
+            .map(|directory| directory.egress)
+            .collect();
+        assert_eq!(
+            lists,
+            vec![
+                Some("0.0.0.0/0".to_string()),
+                Some("203.0.113.0/24:443".to_string())
+            ]
+        );
+    }
+
+    /// An exit holds no copy, so nothing about the copies would ever have
+    /// sent it the project — and it is the one node that cannot carry
+    /// anybody out without knowing who they are.
+    #[tokio::test]
+    async fn a_project_on_this_node_alone_still_tells_the_exits_it_leaves_through() {
+        let (database, deployer, project, me) = spanning("0.44.0").await;
+        node(&database, "nd-exit", "10.42.0.7", "0.44.0").await;
+        node(&database, "nd-old-exit", "10.42.0.8", "0.43.0").await;
+        let api = services::in_project(&database, &project.id, "api")
+            .await
+            .expect("query")
+            .expect("api");
+        let copy = replicas::of_service(&database, &api.id)
+            .await
+            .expect("replicas")
+            .pop()
+            .expect("its copy");
+        replicas::move_to(&database, &copy.id, None)
+            .await
+            .expect("brought home");
+        egress::set_exits(
+            &database,
+            &project.id,
+            &[
+                "10.42.0.7".parse().expect("ip"),
+                "10.42.0.8".parse().expect("ip"),
+            ],
+        )
+        .await
+        .expect("exits");
+
+        deployer.tell_directories().await;
+
+        let told_exit = told(&database, "nd-exit").await;
+        assert_eq!(told_exit.len(), 1, "{told_exit:?}");
+        assert_eq!(told_exit[0].members, vec![me]);
+        assert_eq!(told_exit[0].exits, vec!["10.42.0.7", "10.42.0.8"]);
+        assert!(told(&database, "nd-far").await.is_empty());
+        assert!(told(&database, "nd-old-exit").await.is_empty());
+
+        egress::set_exits(&database, &project.id, &[])
+            .await
+            .expect("exits");
+        deployer.tell_directories().await;
+        let withdrawn = told(&database, "nd-exit").await;
+        assert!(
+            withdrawn.last().is_some_and(|said| said.members.is_empty()),
+            "an exit no longer chosen is told there is nothing: {withdrawn:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_too_old_to_enforce_a_list_is_named_while_it_holds_a_copy() {
+        let (database, deployer, project, _) = spanning("0.43.0").await;
+        assert_eq!(
+            deployer.too_old_for_egress(&project).await.expect("read"),
+            vec!["nd-far.example".to_string()]
+        );
+
+        node(&database, "nd-far", "10.42.0.9", "0.44.0").await;
+        assert!(deployer
+            .too_old_for_egress(&project)
+            .await
+            .expect("read")
+            .is_empty());
     }
 
     #[tokio::test]
@@ -721,6 +862,8 @@ mod tests {
                         slot: 1,
                     }],
                 }],
+                egress: None,
+                exits: Vec::new(),
             },
         )
         .await

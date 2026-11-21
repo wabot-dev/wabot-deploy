@@ -10,6 +10,7 @@ pub mod config_history;
 pub mod databases;
 pub mod directories;
 pub mod edges;
+pub mod egress;
 pub mod env_groups;
 pub mod object_stores;
 pub mod ports;

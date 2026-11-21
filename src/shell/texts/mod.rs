@@ -272,6 +272,7 @@ mod tests {
         "HTTPS",
         "HTTPS · TCP",
         "Id",
+        "Internet",
         "Let's Encrypt",
         "Logs",
         "Secret access key",

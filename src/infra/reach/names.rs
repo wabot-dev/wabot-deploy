@@ -68,7 +68,7 @@ async fn open(deployer: &Deployer, mut caller: TcpStream, peer: SocketAddrV4) {
         }
     };
     for route in routes {
-        if let Some(mut door) = knock(&route).await {
+        if let Some(mut door) = knock(route.door, &route.knock.line(), DIAL_TIMEOUT).await {
             let _ = tokio::io::copy_bidirectional(&mut caller, &mut door).await;
             return;
         }
@@ -77,23 +77,20 @@ async fn open(deployer: &Deployer, mut caller: TcpStream, peer: SocketAddrV4) {
 }
 
 /// Knock at one door, and hand back the connection once it opened.
-async fn knock(route: &Route) -> Option<TcpStream> {
+pub(crate) async fn knock(door: SocketAddr, line: &[u8], patience: Duration) -> Option<TcpStream> {
     let attempt = async {
-        let mut door = TcpStream::connect(route.door).await.ok()?;
-        door.write_all(&route.knock.line()).await.ok()?;
+        let mut door = TcpStream::connect(door).await.ok()?;
+        door.write_all(line).await.ok()?;
         let mut answer = [0u8; OPENED.len()];
         door.read_exact(&mut answer).await.ok()?;
         (answer == OPENED).then_some(door)
     };
-    tokio::time::timeout(DIAL_TIMEOUT, attempt)
-        .await
-        .ok()
-        .flatten()
+    tokio::time::timeout(patience, attempt).await.ok().flatten()
 }
 
 /// The address the container asked for, before the `REDIRECT` changed it.
 #[cfg(target_os = "linux")]
-fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
+pub(crate) fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
     use std::os::fd::AsRawFd;
     // SAFETY: `getsockopt` writes at most `length` bytes into `address`,
     // which is a `sockaddr_in` of exactly that size, and the descriptor is
@@ -119,7 +116,7 @@ fn original_destination(stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn original_destination(_stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
+pub(crate) fn original_destination(_stream: &TcpStream) -> std::io::Result<SocketAddrV4> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "a redirected connection is a Linux kernel's to describe",

@@ -10,6 +10,7 @@ pub mod bucket_name;
 pub mod capability;
 pub mod command_line;
 pub mod cors_origin;
+pub mod destinations;
 pub mod hostname;
 pub mod image_reference;
 pub mod language;

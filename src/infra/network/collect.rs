@@ -22,8 +22,10 @@ use wabot::prelude::Container;
 use wabot::sqlite::SqliteDatabase;
 
 use super::errand::{self, Errand, Kind};
+use crate::domain::values::destinations::Destinations;
 use crate::infra::config::Config;
 use crate::infra::repositories::databases;
+use crate::infra::repositories::egress;
 use crate::infra::repositories::ports;
 use crate::infra::repositories::registry_credentials;
 use crate::infra::repositories::replicas;
@@ -918,13 +920,29 @@ async fn keep_directory(
     authority: &str,
     directory: errand::Directory,
 ) -> Result<(), String> {
-    let Some(project) = crate::infra::repositories::projects::all(database)
+    let existing = crate::infra::repositories::projects::all(database)
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
-        .find(|project| project.name == directory.project)
-    else {
-        return Ok(());
+        .find(|project| project.name == directory.project);
+    let me = crate::infra::network::me(database)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|me| me.overlay_ip);
+    let an_exit = me.is_some_and(|me| directory.exits.contains(&me));
+    let project = match existing {
+        Some(project) => project,
+        None if an_exit => {
+            let granted = crate::infra::network::capability::granted_to(database, authority).await;
+            if !granted.contains(&crate::domain::values::capability::Capability::Exit) {
+                return Err(format!(
+                    "this node does not carry {authority}'s projects to the internet"
+                ));
+            }
+            ensure_project(database, &directory.project, authority).await?
+        }
+        None => return Ok(()),
     };
     if project.origin_node_id.as_deref() != Some(authority) {
         return Err(format!(
@@ -935,10 +953,42 @@ async fn keep_directory(
     crate::infra::repositories::directories::keep(database, &project.id, &directory)
         .await
         .map_err(|error| error.to_string())?;
+    if directory.egress.is_some() || directory.members.is_empty() {
+        let exits: Vec<std::net::Ipv4Addr> = directory
+            .exits
+            .iter()
+            .filter_map(|exit| exit.parse().ok())
+            .collect();
+        egress::set_exits(database, &project.id, &exits)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let unreadable = match directory.egress.as_deref().map(Destinations::parse) {
+        None => None,
+        Some(Ok(destinations)) => {
+            egress::set(database, &project.id, &destinations)
+                .await
+                .map_err(|error| error.to_string())?;
+            None
+        }
+        Some(Err(reason)) => {
+            egress::set(database, &project.id, &Destinations::default())
+                .await
+                .map_err(|error| error.to_string())?;
+            Some(reason)
+        }
+    };
     if let Ok(deployer) = container.try_resolve::<crate::infra::deploy::Deployer>() {
+        deployer.keep_projects_apart(false).await;
         deployer.sync_hosts().await;
     }
-    Ok(())
+    match unreadable {
+        Some(reason) => Err(format!(
+            "where project {} may connect does not read here, so nothing of it leaves this node: {reason}",
+            directory.project
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Be running this release, or say why not.
@@ -2296,6 +2346,115 @@ mod tests {
         .expect("kept");
         let directory = kept().await.expect("query").expect("a directory");
         assert_eq!(directory.members, vec!["10.42.0.2", "10.42.0.9"]);
+    }
+
+    #[tokio::test]
+    async fn a_holder_goes_by_the_owners_destinations_and_closes_on_a_list_it_cannot_read() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let project = crate::infra::repositories::projects::create(&database, "shop")
+            .await
+            .expect("project");
+        crate::infra::repositories::projects::set_origin(&database, &project.id, "nd-owner")
+            .await
+            .expect("origin");
+        let said = |egress: Option<&str>| Errand {
+            id: "er-directory".into(),
+            kind: Kind::Directory,
+            payload: serde_json::json!({
+                "project": "shop",
+                "members": ["10.42.0.2", "10.42.0.9"],
+                "services": [],
+                "egress": egress,
+            }),
+        };
+        let held = || egress::of_project(&database, &project.id);
+        let config = Config::default();
+        let container = Container::new();
+        let from_owner = |errand| carry_out(&database, &config, &container, "nd-owner", errand);
+
+        from_owner(said(Some("203.0.113.0/24:443")))
+            .await
+            .expect("kept");
+        assert_eq!(held().await.expect("read").text(), "203.0.113.0/24:443");
+
+        from_owner(said(None)).await.expect("a withdrawal");
+        assert_eq!(
+            held().await.expect("read").text(),
+            "203.0.113.0/24:443",
+            "a withdrawal says nothing about where the project may go"
+        );
+
+        let refused = from_owner(said(Some("api.example.com:https")))
+            .await
+            .expect_err("a list it cannot read");
+        assert!(refused.contains("nothing of it leaves"), "{refused}");
+        assert!(held().await.expect("read").is_empty());
+    }
+
+    /// An exit holds no copy, so nothing else would have told it the
+    /// project exists: the directory makes it, and only on a node that agreed
+    /// to carry that node's projects.
+    #[tokio::test]
+    async fn an_exit_learns_the_project_it_carries_only_from_a_node_it_carries_for() {
+        use crate::domain::values::capability::Capability;
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let me = crate::infra::network::ensure_hub(&database, &Config::default())
+            .await
+            .expect("hub")
+            .overlay_ip
+            .expect("an overlay address");
+        let said = Errand {
+            id: "er-directory".into(),
+            kind: Kind::Directory,
+            payload: serde_json::json!({
+                "project": "shop",
+                "members": ["10.42.0.9"],
+                "services": [],
+                "egress": "0.0.0.0/0",
+                "exits": [me.clone()],
+            }),
+        };
+        let config = Config::default();
+        let container = Container::new();
+        let shop = || async {
+            crate::infra::repositories::projects::all(&database)
+                .await
+                .expect("query")
+                .into_iter()
+                .find(|project| project.name == "shop")
+        };
+
+        let refused = carry_out(&database, &config, &container, "nd-owner", said.clone()).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|reason| reason.contains("does not carry")),
+            "{refused:?}"
+        );
+        assert!(shop().await.is_none());
+
+        crate::infra::network::capability::set_provides(&database, Capability::Exit, true)
+            .await
+            .expect("provided");
+        crate::infra::network::capability::grant(&database, "nd-owner", &[Capability::Exit])
+            .await
+            .expect("granted");
+        carry_out(&database, &config, &container, "nd-owner", said)
+            .await
+            .expect("kept");
+        let project = shop().await.expect("made");
+        assert_eq!(project.origin_node_id.as_deref(), Some("nd-owner"));
+        assert_eq!(
+            egress::exits_of(&database, &project.id)
+                .await
+                .expect("read"),
+            vec![me.parse::<std::net::Ipv4Addr>().expect("an address")]
+        );
+        let directory = crate::infra::repositories::directories::of_project(&database, &project.id)
+            .await
+            .expect("read")
+            .expect("kept with no service in it");
+        assert_eq!(directory.members, vec!["10.42.0.9"]);
     }
 
     /// **What an authority grants a member reaches the member.** It was

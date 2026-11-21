@@ -7,14 +7,16 @@ use crate::domain::errors::PlatformResult;
 use crate::infra::clock::now_ms;
 use crate::infra::network::errand::Directory;
 
-/// Keep `directory` for the project, or forget it when it lists nothing.
+/// Keep `directory` for the project, or forget it when it is a withdrawal:
+/// one naming no node. A directory listing no service still says who may
+/// leave through an exit.
 pub async fn keep(
     database: &SqliteDatabase,
     project_id: &str,
     directory: &Directory,
 ) -> PlatformResult<()> {
     let project = project_id.to_string();
-    let body = match directory.services.is_empty() {
+    let body = match directory.members.is_empty() {
         true => None,
         false => Some(serde_json::to_string(directory).expect("a directory is plain data")),
     };
@@ -82,6 +84,8 @@ mod tests {
                     slot: 1,
                 }],
             }],
+            egress: Some("203.0.113.0/24".into()),
+            exits: vec!["10.42.0.9".into()],
         };
 
         keep(&database, &project.id, &listed).await.expect("kept");

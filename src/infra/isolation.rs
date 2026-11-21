@@ -41,6 +41,16 @@
 //! node's addresses outside `10.42.0.0/16`, as anything outside does.
 //! Another bridge's gateway and the overlay address are other networks.
 //!
+//! ## Where a project may go
+//!
+//! Past all of that, the internet, which each project's list of
+//! destinations decides (`docs/egress.md`). In `mangle`, before any NAT,
+//! because a connection the node carries elsewhere is redirected to it in
+//! `nat` and `FORWARD` never sees it. A project whose list is anywhere
+//! writes nothing, and goes out as it always has. Any other project's DNS
+//! is redirected to the node's resolver, whatever server it asked, so a
+//! name is resolved, and its addresses opened, only if the list holds it.
+//!
 //! ## It only drops
 //!
 //! What crosses goes back to `FORWARD` and `INPUT` and to whatever else
@@ -58,12 +68,14 @@ use std::net::Ipv4Addr;
 
 use wabot::sqlite::SqliteDatabase;
 
+use crate::domain::values::destinations::{Destinations, NOT_THE_INTERNET};
 use crate::infra::network::tunnel::INTERFACE as OVERLAY;
 use crate::infra::runtime::network::{ProjectNetwork, BRIDGE_PREFIX, SPACE};
 
 pub const BETWEEN: &str = "WABOT-PROJECTS";
 pub const INTO_THE_NODE: &str = "WABOT-PROJECTS-IN";
 pub const TO_THE_NAMES: &str = "WABOT-PROJECTS-NAMES";
+pub const LEAVING: &str = "WABOT-EGRESS";
 
 const ERROR: &str = "isolation.last_error";
 
@@ -75,11 +87,23 @@ pub struct Followed {
     pub port: u16,
 }
 
+/// A project's bridge, where its containers may connect past it, the
+/// addresses its names resolved to that are still in date, and whether
+/// its copies here leave for the internet through another node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Egress {
+    pub index: u8,
+    pub destinations: Destinations,
+    pub learned: Vec<(Ipv4Addr, Option<u16>)>,
+    pub elsewhere: bool,
+}
+
 /// What the rules are written from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     pub bridges: Vec<u8>,
     pub followed: Vec<Followed>,
+    pub egress: Vec<Egress>,
 }
 
 /// The input `iptables-restore --noflush` is given.
@@ -153,6 +177,13 @@ pub fn render(plan: &Plan) -> String {
     ));
     rules.push("COMMIT".to_string());
 
+    let limited: Vec<(ProjectNetwork, &Egress)> = plan
+        .egress
+        .iter()
+        .filter(|egress| !egress.destinations.is_anywhere() || egress.elsewhere)
+        .filter_map(|egress| Some((ProjectNetwork::new(egress.index).ok()?, egress)))
+        .collect();
+
     rules.extend([
         "*nat".to_string(),
         format!(":{TO_THE_NAMES} - [0:0]"),
@@ -161,8 +192,78 @@ pub fn render(plan: &Plan) -> String {
             crate::infra::reach::STAND_INS,
             crate::infra::reach::NAMES_PORT
         ),
-        "COMMIT".to_string(),
     ]);
+    for (network, egress) in &limited {
+        let bridge = &network.bridge;
+        for protocol in ["udp", "tcp"] {
+            rules.push(format!(
+                "-A {TO_THE_NAMES} -i {bridge} -p {protocol} --dport 53 -j REDIRECT --to-ports {}",
+                crate::infra::egress::RESOLVER_PORT
+            ));
+        }
+        if egress.elsewhere {
+            for range in NOT_THE_INTERNET {
+                rules.push(format!(
+                    "-A {TO_THE_NAMES} -i {bridge} -d {range} -j RETURN"
+                ));
+            }
+            rules.push(format!(
+                "-A {TO_THE_NAMES} -i {bridge} -m addrtype --dst-type LOCAL -j RETURN"
+            ));
+            rules.push(format!(
+                "-A {TO_THE_NAMES} -i {bridge} -p tcp -j REDIRECT --to-ports {}",
+                crate::infra::egress::EXIT_PORT
+            ));
+        }
+    }
+    rules.push("COMMIT".to_string());
+
+    rules.extend([
+        "*mangle".to_string(),
+        format!(":{LEAVING} - [0:0]"),
+        format!("-A {LEAVING} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"),
+        format!("-A {LEAVING} -d {SPACE} -j RETURN"),
+        format!("-A {LEAVING} -m addrtype --dst-type LOCAL -j RETURN"),
+    ]);
+    for (network, egress) in &limited {
+        let bridge = &network.bridge;
+        for protocol in ["udp", "tcp"] {
+            rules.push(format!(
+                "-A {LEAVING} -i {bridge} -p {protocol} --dport 53 -j RETURN"
+            ));
+        }
+        if egress.elsewhere {
+            rules.push(format!(
+                "-A {LEAVING} -i {bridge} ! -p tcp \
+                 -m comment --comment \"wabot-deploy leaves through another node, which carries TCP\" -j DROP"
+            ));
+        }
+        if egress.destinations.is_anywhere() {
+            rules.push(format!("-A {LEAVING} -i {bridge} -j RETURN"));
+            continue;
+        }
+        let learned = egress
+            .learned
+            .iter()
+            .map(|(address, port)| (ipnet::Ipv4Net::from(*address), *port));
+        for (range, port) in egress.destinations.ranges().into_iter().chain(learned) {
+            match port {
+                None => rules.push(format!("-A {LEAVING} -i {bridge} -d {range} -j RETURN")),
+                Some(port) => {
+                    for protocol in ["tcp", "udp"] {
+                        rules.push(format!(
+                            "-A {LEAVING} -i {bridge} -d {range} -p {protocol} --dport {port} -j RETURN"
+                        ));
+                    }
+                }
+            }
+        }
+        rules.push(format!(
+            "-A {LEAVING} -i {bridge} \
+             -m comment --comment \"wabot-deploy a destination the project does not allow\" -j DROP"
+        ));
+    }
+    rules.push("COMMIT".to_string());
     rules.join("\n") + "\n"
 }
 
@@ -172,7 +273,7 @@ enum Operation {
     InsertAtTop,
 }
 
-fn jumps(operation: Operation) -> [Vec<String>; 3] {
+fn jumps(operation: Operation) -> [Vec<String>; 4] {
     let every_bridge = format!("{BRIDGE_PREFIX}+");
     let at = |table: &str, chain: &str| -> Vec<String> {
         let mut args = vec!["-w", "5", "-t", table];
@@ -194,11 +295,18 @@ fn jumps(operation: Operation) -> [Vec<String>; 3] {
     let mut names = at("nat", "PREROUTING");
     names.extend([
         "-i".to_string(),
-        every_bridge,
+        every_bridge.clone(),
         "-j".to_string(),
         TO_THE_NAMES.to_string(),
     ]);
-    [between, into, names]
+    let mut leaving = at("mangle", "PREROUTING");
+    leaving.extend([
+        "-i".to_string(),
+        every_bridge,
+        "-j".to_string(),
+        LEAVING.to_string(),
+    ]);
+    [between, into, names, leaving]
 }
 
 fn written() -> &'static tokio::sync::Mutex<Option<String>> {
@@ -316,7 +424,32 @@ mod tests {
                     port: *port,
                 })
                 .collect(),
+            egress: Vec::new(),
         }
+    }
+
+    fn leaving(lists: &[(u8, &str)]) -> Plan {
+        Plan {
+            bridges: lists.iter().map(|(index, _)| *index).collect(),
+            followed: Vec::new(),
+            egress: lists
+                .iter()
+                .map(|(index, list)| Egress {
+                    index: *index,
+                    destinations: Destinations::parse(list).expect("a list"),
+                    learned: Vec::new(),
+                    elsewhere: false,
+                })
+                .collect(),
+        }
+    }
+
+    fn mangle(rules: &str) -> Vec<&str> {
+        let (_, mangle) = rules.split_once("*mangle\n").expect("the mangle table");
+        mangle
+            .lines()
+            .filter(|line| line.starts_with("-A "))
+            .collect()
     }
 
     fn position(rules: &str, rule: &str) -> usize {
@@ -438,7 +571,12 @@ mod tests {
     fn the_rules_only_ever_drop_or_return() {
         let rules = render(&plan(&[1, 2, 254], &[(2, "10.42.0.9", 30010)]));
         let (filter, _) = rules.split_once("*nat").expect("both tables");
-        for line in filter.lines().filter(|line| line.starts_with("-A ")) {
+        let closed = render(&leaving(&[(1, "203.0.113.0/24:443")]));
+        let lines = filter
+            .lines()
+            .filter(|line| line.starts_with("-A "))
+            .chain(mangle(&closed));
+        for line in lines {
             assert!(
                 line.ends_with("-j RETURN") || line.ends_with("-j DROP"),
                 "{line}"
@@ -452,6 +590,7 @@ mod tests {
     fn a_stand_in_is_redirected_to_the_node_and_nothing_else_is() {
         let rules = render(&plan(&[1, 2], &[]));
         let (_, nat) = rules.split_once("*nat\n").expect("the nat table");
+        let (nat, _) = nat.split_once("*mangle\n").expect("the mangle table after");
         let written: Vec<&str> = nat.lines().filter(|line| line.starts_with("-A ")).collect();
         assert_eq!(
             written,
@@ -459,7 +598,7 @@ mod tests {
         );
         assert!(nat.starts_with(":WABOT-PROJECTS-NAMES - [0:0]\n"), "{nat}");
 
-        let [_, _, names] = jumps(Operation::InsertAtTop);
+        let [_, _, names, _] = jumps(Operation::InsertAtTop);
         assert_eq!(&names[2..7], &["-t", "nat", "-I", "PREROUTING", "1"]);
         assert!(names.ends_with(&[
             "-i".to_string(),
@@ -471,7 +610,7 @@ mod tests {
 
     #[test]
     fn both_jumps_go_in_first_and_the_check_asks_for_what_the_insert_writes() {
-        let [between, into, _] = jumps(Operation::InsertAtTop);
+        let [between, into, _, leaving] = jumps(Operation::InsertAtTop);
         assert_eq!(&between[4..7], &["-I", "FORWARD", "1"]);
         assert!(between.ends_with(&["-j".to_string(), BETWEEN.to_string()]));
         assert_eq!(&into[4..7], &["-I", "INPUT", "1"]);
@@ -480,6 +619,13 @@ mod tests {
             "wd-+".to_string(),
             "-j".to_string(),
             INTO_THE_NODE.to_string()
+        ]));
+        assert_eq!(&leaving[2..7], &["-t", "mangle", "-I", "PREROUTING", "1"]);
+        assert!(leaving.ends_with(&[
+            "-i".to_string(),
+            "wd-+".to_string(),
+            "-j".to_string(),
+            LEAVING.to_string()
         ]));
 
         for (check, insert) in jumps(Operation::Check)
@@ -490,5 +636,180 @@ mod tests {
             assert_eq!(check[5], insert[5], "the same chain");
             assert_eq!(&check[6..], &insert[7..], "the same rule");
         }
+    }
+
+    #[test]
+    fn a_project_whose_list_is_anywhere_goes_out_as_it_always_has() {
+        let rules = render(&leaving(&[(1, "0.0.0.0/0"), (2, "0.0.0.0/0\n203.0.113.5")]));
+        assert!(
+            !mangle(&rules).iter().any(|line| line.contains("-i wd-")),
+            "{rules}"
+        );
+    }
+
+    #[test]
+    fn a_project_reaches_the_destinations_on_its_list_and_nothing_else_past_its_network() {
+        let rules = render(&leaving(&[
+            (1, "203.0.113.0/24 the office\n198.51.100.7:443"),
+            (2, "0.0.0.0/0"),
+        ]));
+        let written = mangle(&rules);
+        let own: Vec<&str> = written
+            .iter()
+            .copied()
+            .filter(|line| line.contains("-i wd-1 "))
+            .collect();
+        assert_eq!(
+            own,
+            vec![
+                "-A WABOT-EGRESS -i wd-1 -p udp --dport 53 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -p tcp --dport 53 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -d 203.0.113.0/24 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -d 198.51.100.7/32 -p tcp --dport 443 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -d 198.51.100.7/32 -p udp --dport 443 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -m comment --comment \"wabot-deploy a destination the project does not allow\" -j DROP",
+            ]
+        );
+        assert!(
+            !written.iter().any(|line| line.contains("-i wd-2 ")),
+            "{rules}"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_lets_nothing_out_but_its_own_names() {
+        let rules = render(&leaving(&[(4, "")]));
+        let own: Vec<&str> = mangle(&rules)
+            .into_iter()
+            .filter(|line| line.contains("-i wd-4 "))
+            .collect();
+        assert_eq!(own.len(), 3, "{rules}");
+        assert!(own[2].ends_with("-j DROP"), "{rules}");
+    }
+
+    /// A list is about the internet. A reply to a client of a published
+    /// port, the project's own network and names on other nodes, and the
+    /// node's own addresses are decided by the rest of this module and by
+    /// the allowlists, and a list that forgot `0.0.0.0/0` must not take
+    /// them away.
+    #[test]
+    fn replies_the_project_space_and_the_node_itself_are_never_a_destination_refused() {
+        let rules = render(&leaving(&[(1, "")]));
+        let written = mangle(&rules);
+        let drop = written
+            .iter()
+            .position(|line| line.ends_with("-j DROP"))
+            .expect("a drop");
+        for kept in [
+            "-A WABOT-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+            "-A WABOT-EGRESS -d 10.42.0.0/16 -j RETURN",
+            "-A WABOT-EGRESS -m addrtype --dst-type LOCAL -j RETURN",
+        ] {
+            let at = written
+                .iter()
+                .position(|line| *line == kept)
+                .unwrap_or_else(|| panic!("{kept} is missing from:\n{rules}"));
+            assert!(at < drop, "{rules}");
+        }
+    }
+
+    #[test]
+    fn a_closed_projects_dns_goes_to_the_node_whatever_server_it_asked() {
+        let rules = render(&leaving(&[(1, "api.example.com"), (2, "0.0.0.0/0")]));
+        let (_, nat) = rules.split_once("*nat\n").expect("the nat table");
+        let (nat, _) = nat.split_once("*mangle\n").expect("the mangle table after");
+        let redirected: Vec<&str> = nat
+            .lines()
+            .filter(|line| line.contains("--dport 53"))
+            .collect();
+        assert_eq!(
+            redirected,
+            vec![
+                "-A WABOT-PROJECTS-NAMES -i wd-1 -p udp --dport 53 -j REDIRECT --to-ports 31103",
+                "-A WABOT-PROJECTS-NAMES -i wd-1 -p tcp --dport 53 -j REDIRECT --to-ports 31103",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_a_name_resolved_to_is_reached_on_the_port_its_line_allows() {
+        let mut plan = leaving(&[(1, "api.example.com:443\n*.cdn.example.com")]);
+        plan.egress[0].learned = vec![
+            ("198.51.100.7".parse().expect("an address"), Some(443)),
+            ("192.0.2.9".parse().expect("an address"), None),
+        ];
+        let rules = render(&plan);
+        let written = mangle(&rules);
+        let drop = written
+            .iter()
+            .position(|line| line.ends_with("-j DROP"))
+            .expect("a drop");
+        for opened in [
+            "-A WABOT-EGRESS -i wd-1 -d 198.51.100.7/32 -p tcp --dport 443 -j RETURN",
+            "-A WABOT-EGRESS -i wd-1 -d 198.51.100.7/32 -p udp --dport 443 -j RETURN",
+            "-A WABOT-EGRESS -i wd-1 -d 192.0.2.9/32 -j RETURN",
+        ] {
+            let at = written
+                .iter()
+                .position(|line| *line == opened)
+                .unwrap_or_else(|| panic!("{opened} is missing from:\n{rules}"));
+            assert!(at < drop, "{rules}");
+        }
+    }
+
+    /// The exit carries TCP and nothing else, so anything else leaving for
+    /// the internet would leave through the wrong node, and is dropped
+    /// rather than doing so. The project's own network, this node and the
+    /// ranges that are not the internet stay here.
+    #[test]
+    fn a_project_leaving_through_another_node_has_its_tcp_carried_and_nothing_else_leave() {
+        let mut plan = leaving(&[(1, "0.0.0.0/0")]);
+        plan.egress[0].elsewhere = true;
+        let rules = render(&plan);
+
+        let own: Vec<&str> = mangle(&rules)
+            .into_iter()
+            .filter(|line| line.contains("-i wd-1 "))
+            .collect();
+        assert_eq!(
+            own,
+            vec![
+                "-A WABOT-EGRESS -i wd-1 -p udp --dport 53 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 -p tcp --dport 53 -j RETURN",
+                "-A WABOT-EGRESS -i wd-1 ! -p tcp -m comment --comment \"wabot-deploy leaves through another node, which carries TCP\" -j DROP",
+                "-A WABOT-EGRESS -i wd-1 -j RETURN",
+            ]
+        );
+
+        let (_, nat) = rules.split_once("*nat\n").expect("the nat table");
+        let (nat, _) = nat.split_once("*mangle\n").expect("the mangle table after");
+        let written: Vec<&str> = nat
+            .lines()
+            .filter(|line| line.contains("-i wd-1 "))
+            .collect();
+        let carried = written
+            .iter()
+            .position(|line| line.ends_with("-p tcp -j REDIRECT --to-ports 31102"))
+            .expect("carried to the exit listener");
+        for stays in [
+            "-A WABOT-PROJECTS-NAMES -i wd-1 -p tcp --dport 53 -j REDIRECT --to-ports 31103",
+            "-A WABOT-PROJECTS-NAMES -i wd-1 -d 10.0.0.0/8 -j RETURN",
+            "-A WABOT-PROJECTS-NAMES -i wd-1 -d 192.168.0.0/16 -j RETURN",
+            "-A WABOT-PROJECTS-NAMES -i wd-1 -d 169.254.0.0/16 -j RETURN",
+            "-A WABOT-PROJECTS-NAMES -i wd-1 -m addrtype --dst-type LOCAL -j RETURN",
+        ] {
+            let at = written
+                .iter()
+                .position(|line| *line == stays)
+                .unwrap_or_else(|| panic!("{stays} is missing from:\n{rules}"));
+            assert!(at < carried, "{rules}");
+        }
+    }
+
+    #[test]
+    fn a_project_leaving_through_its_own_node_is_never_carried() {
+        let rules = render(&leaving(&[(1, "203.0.113.0/24"), (2, "0.0.0.0/0")]));
+        assert!(!rules.contains("31102"), "{rules}");
+        assert!(!rules.contains("! -p tcp"), "{rules}");
     }
 }

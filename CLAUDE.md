@@ -479,6 +479,10 @@ A separate subject, with its own documents and its own decisions:
   What is always let in, how a list travels with a name to the nodes
   serving it, the kernel's chain, and the way back from a list that shut
   its author out.
+- [`docs/egress.md`](docs/egress.md) — where a project's containers may
+  connect past its own network and which nodes they leave through: a list
+  per project, enforced at the bridge on every node running a copy, and
+  carried to them in the directory.
 - [`docs/dns.md`](docs/dns.md) — the nodes as authoritative name
   servers: the `dns` capability (off until turned on), zones and records
   as a project's resource, which nodes answer for each zone, and the names
@@ -555,6 +559,20 @@ happened:
   `errand::DIRECTORY_SINCE` (0.44.0) has no door, and **that constant has
   to be the version this ships in**: the working tree says 0.44.0 for that
   reason.
+- Where a project may connect (`docs/egress.md`) is enforced by address
+  and by name on every node running a copy, verified between the two VMs
+  on 2026-11-20. A closed project's DNS is answered by the node
+  (`infra::egress`), and a name off its list is never asked upstream.
+  The nodes it leaves through are its exits: TCP only, carried through
+  the door to a node that turned `exit` on and granted it, verified
+  between the two VMs on the same day. When no exit answers, nothing
+  leaves, and the reason reaches only the log. Rotation across two exits
+  has run only in a test, because it needs a third node. An exit that
+  held no copy keeps the project's empty row after it is no longer
+  chosen. `errand::EGRESS_SINCE` is 0.44.0 for the reason
+  `DIRECTORY_SINCE` is.
+- The isolation chains are healed when a jump is missing, not when a
+  chain was emptied with its jump left in place.
 - A service with a volume runs only on the node that keeps it: the errand
   that places a copy elsewhere carries no volumes, so both directions are
   refused with a sentence rather than starting a copy on an empty

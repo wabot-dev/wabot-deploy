@@ -409,6 +409,24 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             problems += 1;
         }
     }
+    let enforced = crate::infra::repositories::egress::by_network(&database)
+        .await
+        .unwrap_or_default();
+    let limited = enforced
+        .iter()
+        .filter(|project| !project.destinations.is_anywhere())
+        .count();
+    let exits = enforced
+        .iter()
+        .filter(|project| !project.exits.is_empty())
+        .count();
+    if networks > 0 {
+        println!(
+            "  egress    {limited} of {networks} limited to their destinations ({}), the rest anywhere",
+            crate::infra::isolation::LEAVING
+        );
+        println!("  exits     {exits} of {networks} leave through chosen nodes, the rest through their own");
+    }
     if let Some(reason) = crate::infra::isolation::last_error(&database).await {
         println!("  last failure writing them:");
         println!("    {reason}");

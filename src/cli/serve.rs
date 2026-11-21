@@ -491,6 +491,7 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     loop {
                         deployer.tell_directories().await;
                         deployer.sync_hosts().await;
+                        deployer.forget_expired_egress().await;
                         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     }
                 };
@@ -498,6 +499,8 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                     _ = cancel.cancelled() => {}
                     _ = crate::infra::reach::names::run((*deployer).clone()) => {}
                     _ = crate::infra::reach::door::run((*deployer).clone()) => {}
+                    _ = crate::infra::egress::resolver::run((*deployer).clone()) => {}
+                    _ = crate::infra::egress::exit::run((*deployer).clone()) => {}
                     _ = tell => {}
                 }
                 Ok::<(), anyhow::Error>(())
