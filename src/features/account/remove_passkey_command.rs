@@ -26,7 +26,7 @@ impl RemovePasskey<'_> {
             database,
             &self.account.id,
             AccountEvent::PasskeyRemoved,
-            &found.name,
+            found.title(),
             self.asked.address.as_deref(),
             false,
         )

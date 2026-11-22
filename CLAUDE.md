@@ -247,8 +247,9 @@ shipped as bugs before anyone noticed:
 So client behaviour goes through `wabot.island(id, mount)` and a
 `<wabot-island>` host, which the runtime re-hydrates after every swap
 and tears down when the host leaves. `assets/console.js` registers
-nine: `go`, `fields`, `copy`, `passkey`, `project-live`, `updates-live`,
-`node-live`, `logs-live` and `stability`. Prefer declarative — the markup carries `data-when` /
+eleven: `go`, `fields`, `copy`, `passkey`, `project-live`, `updates-live`,
+`node-live`, `logs-live`, `stability`, `countdown` and `account-live`.
+Prefer declarative — the markup carries `data-when` /
 `data-required-when`, so a new dependent field is an attribute rather
 than another script.
 

@@ -20,6 +20,7 @@ use crate::domain::entities::account::Account;
 use crate::domain::values::theme::Theme;
 
 use crate::shell::assets;
+use crate::shell::components::account_control::{AccountControl, ICON_ACCOUNT};
 use crate::shell::texts::language::t;
 
 impl Theme {
@@ -82,7 +83,6 @@ const ICON_NODES: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill
 
 const ICON_ORGANISATIONS: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/></svg>"#;
 
-const ICON_ACCOUNT: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>"#;
 const ICON_PEOPLE: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
 
 const ICON_SEARCH: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>"#;
@@ -202,20 +202,7 @@ pub struct Frame {
     pub this_node: Option<(String, String)>,
     pub theme: Theme,
     pub language: crate::domain::values::language::Language,
-    pub notice: Option<Notice>,
-}
-
-/// What the frame tells somebody before the page: a device asking to be
-/// let in as them, or activity they have not read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Notice {
-    Request {
-        id: String,
-        name: String,
-        address: Option<String>,
-        at: i64,
-    },
-    Activity(usize),
+    pub account: AccountControl,
 }
 
 /// The last segment of a path when it names an action or a tab rather
@@ -263,7 +250,11 @@ impl Frame {
             this_node: None,
             theme: account.theme,
             language: account.language,
-            notice: None,
+            account: AccountControl {
+                username: account.username.clone(),
+                here: section == Section::Account,
+                ..Default::default()
+            },
         }
     }
 
@@ -280,7 +271,7 @@ impl Frame {
         path: impl Into<String>,
     ) -> Self {
         let mut frame = Self::new(account, section, path);
-        frame.notice = notice(database, account).await;
+        frame.account = AccountControl::load(database, account, section == Section::Account).await;
         match section {
             Section::Projects => frame.list = projects_list(database, account, &frame.path).await,
             Section::Nodes if frame.admin => {
@@ -310,40 +301,6 @@ impl Frame {
             _ => {}
         }
         frame
-    }
-
-    fn noticed(&self) -> impl Renderable + '_ {
-        rsx! {
-            @match &self.notice {
-                Some(Notice::Request { id, name, address, at }) => {
-                    <section class="card stack notice">
-                        <p>
-                            <strong>(name)</strong>
-                            @if let Some(address) = address {
-                                " · "(address)
-                            }
-                            " · "(crate::shell::layouts::layout::when(*at))
-                            " — "(t("asks to sign in as you."))
-                        </p>
-                        <div class="actions">
-                            <a class="btn" href="/account/approve">(t("It was me"))</a>
-                            <form method="post" action=(format!("/account/requests/{id}/refuse"))>
-                                <button type="submit" class="btn btn-secondary">(t("It was not me"))</button>
-                            </form>
-                        </div>
-                    </section>
-                }
-                Some(Notice::Activity(count)) => {
-                    <section class="card notice">
-                        <p>
-                            (t("Something happened to your account since you last looked:"))" "
-                            <a href="/account/activity">(format!("{count}"))" "(t("in Activity"))</a>
-                        </p>
-                    </section>
-                }
-                None => {}
-            }
-        }
     }
 
     /// Where the brand goes: what this account came to look at.
@@ -405,12 +362,6 @@ impl Frame {
         };
         let crumbs =
             crate::shell::texts::language::scoped(language, || self.crumbs().render().into_inner());
-        let noticed = match self.path.starts_with("/account") {
-            true => String::new(),
-            false => crate::shell::texts::language::scoped(language, || {
-                self.noticed().render().into_inner()
-            }),
-        };
         let body = match self.shows_list() {
             true => "app-body has-list",
             false => "app-body",
@@ -422,7 +373,6 @@ impl Frame {
                     (hypertext::Raw::dangerously_create(&rail))
                     (hypertext::Raw::dangerously_create(&list))
                     <main>
-                        (hypertext::Raw::dangerously_create(&noticed))
                         (hypertext::Raw::dangerously_create(&crumbs))
                         (hypertext::Raw::dangerously_create(&inner))
                     </main>
@@ -488,6 +438,14 @@ impl Frame {
 
         if segments.first() == Some(&"node") {
             self.this_machine(&segments, &mut trail);
+            return trail;
+        }
+        // **One thing, and nothing above it.** Your account is reached from
+        // the header rather than through a section, and its tabs are its
+        // pages: `/account` had one crumb and `/account/devices` two, so
+        // the trail came and went between tabs and moved everything under
+        // it by its height.
+        if self.section == Section::Account {
             return trail;
         }
 
@@ -565,11 +523,7 @@ impl Frame {
                 <div class="topbar-right">
                     (self.languages())
                     (self.toggle())
-                    <a class="btn btn-ghost btn-icon" href="/account"
-                       title=(format!("{} · {}", t("Your account"), self.username))
-                       aria-label=(t("Your account"))>
-                        (hypertext::Raw::dangerously_create(ICON_ACCOUNT))
-                    </a>
+                    (self.account.render())
                     // A form, not a link: signing out changes state, and
                     // a GET that changes state is one a prefetcher fires.
                     <form method="post" action="/sign-out">
@@ -848,6 +802,64 @@ pub const CSS: &str = r#"
   gap: var(--sp-3);
 }
 
+/* The account's icon, and a dot when it has something to say. The dot is
+   drawn over the icon's corner so the header never changes size: the
+   notice it replaced pushed the whole page down by its height.
+
+   Orange for a device asking, because that is somebody waiting on an
+   answer; the muted ink for activity, which can wait. */
+.account-control { position: relative; display: flex; }
+.account-control.here .account-button {
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+}
+.account-button { position: relative; }
+.account-dot {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: rgb(var(--c-fg-muted));
+  pointer-events: none;
+}
+.account-dot.asking { background: rgb(var(--c-brand)); }
+
+/* What the dot is about, over the page rather than in it. A `popover`
+   opens without scripting and closes on Escape or a click outside. Its
+   place under the icon is set here, because anchoring is not in every
+   browser yet: the header is fixed, so a fixed panel stays under it.
+
+   No shadow to lift it: the page behind dims instead, which is the
+   separation by tone the design system asks for. */
+.account-panel {
+  position: fixed;
+  inset: 3.5rem max(var(--sp-4), env(safe-area-inset-right)) auto auto;
+  margin: 0;
+  width: min(22rem, calc(100vw - 2 * var(--sp-4)));
+  padding: var(--sp-4);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg-body));
+}
+.account-panel::backdrop { background: rgb(0 0 0 / 0.18); }
+.account-panel:popover-open { display: flex; flex-direction: column; gap: var(--sp-4); }
+.account-asking { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr); gap: var(--sp-3); }
+.account-asking p { margin: 0; }
+.account-panel-name { color: rgb(var(--c-fg)); font-weight: 500; }
+.account-panel-meta { font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); overflow-wrap: anywhere; }
+.account-panel-actions { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; }
+.account-panel-actions form { margin: 0; }
+.account-panel-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.account-panel-foot a { color: rgb(var(--c-fg)); }
+
 /* Jump by name. The field is the form: the icon sits inside its box,
    which is why the box is the form's and the input has none. */
 .go {
@@ -1028,22 +1040,6 @@ pub const CSS: &str = r#"
 /// A device asking first, because it waits five minutes at most; then
 /// whatever they have not read. Neither is a reason for a page not to
 /// render.
-async fn notice(database: &SqliteDatabase, account: &Account) -> Option<Notice> {
-    use crate::infra::accounts::{events, requests};
-    if let Ok(Some(request)) = requests::pending_for(database, &account.id).await {
-        return Some(Notice::Request {
-            id: request.id,
-            name: request.name,
-            address: request.address,
-            at: request.created_at,
-        });
-    }
-    match events::unseen(database, &account.id).await {
-        Ok(count) if count > 0 => Some(Notice::Activity(count)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -340,6 +340,10 @@ fn migrations() -> Vec<Migration> {
             "0085_access",
             include_str!("../../migrations/0085_access.sql"),
         ),
+        Migration::new(
+            "0086_passkey_provider",
+            include_str!("../../migrations/0086_passkey_provider.sql"),
+        ),
     ]
 }
 

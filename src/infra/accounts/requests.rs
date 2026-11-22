@@ -21,6 +21,7 @@ pub struct DeviceRequest {
     pub address: Option<String>,
     pub approved: bool,
     pub created_at: i64,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub enum Redeemed {
 }
 
 const COLUMNS: &str = "\"id\", \"account_id\", \"passkey_id\", \"name\", \"address\", \
-                       \"code_hash\" IS NOT NULL, \"created_at\"";
+                       \"code_hash\" IS NOT NULL, \"created_at\", \"expires_at\"";
 
 fn decode(
     row: &wabot::sqlite::rusqlite::Row<'_>,
@@ -45,6 +46,7 @@ fn decode(
         address: row.get(4)?,
         approved: row.get(5)?,
         created_at: row.get(6)?,
+        expires_at: row.get(7)?,
     })
 }
 
@@ -183,7 +185,8 @@ pub async fn refuse(
 
 /// The browser that opened a request types the code it was given.
 pub async fn redeem(database: &SqliteDatabase, token: &str, code: &str) -> AccountResult<Redeemed> {
-    let (hash, typed) = (sha256_hex(token), sha256_hex(code.trim()));
+    let digits: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    let (hash, typed) = (sha256_hex(token), sha256_hex(&digits));
     Ok(database
         .write(move |connection| {
             let found = connection
@@ -196,8 +199,8 @@ pub async fn redeem(database: &SqliteDatabase, token: &str, code: &str) -> Accou
                     |row| {
                         Ok((
                             decode(row)?,
-                            row.get::<_, Option<String>>(7)?,
-                            row.get::<_, i64>(8)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, i64>(9)?,
                         ))
                     },
                 )

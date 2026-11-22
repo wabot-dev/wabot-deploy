@@ -26,6 +26,9 @@ impl AddDevice<'_> {
         )
         .await
         .map_err(|error| error.to_string())?;
-        Ok(DeviceLinkResponse { token })
+        Ok(DeviceLinkResponse {
+            token,
+            expires_at: crate::infra::clock::now_ms() + Purpose::Device.minutes() * 60_000,
+        })
     }
 }

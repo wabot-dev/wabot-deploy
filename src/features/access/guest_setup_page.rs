@@ -49,8 +49,8 @@ pub fn render<'a>(page: &'a Setup<'a>) -> impl Renderable + 'a {
     let has_token = page.has_token;
     rsx! {
     (layout::style_tag())
-    <main class="shell narrow">
-        (mark("Set up this node"))
+    <main class="shell narrow guest">
+        (mark(t("Set up this node")))
         @if let Some(message) = &page.query_error {
             (layout::error_note(message))
         }

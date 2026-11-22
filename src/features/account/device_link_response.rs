@@ -2,4 +2,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceLinkResponse {
     pub token: String,
+    pub expires_at: i64,
 }

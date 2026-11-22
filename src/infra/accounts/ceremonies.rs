@@ -84,6 +84,31 @@ pub async fn begin_assertion(
     })
 }
 
+/// Asking an account for its passkey again without knowing the host the
+/// page was opened by: what the header offers on every page. The browser
+/// supplies its own host as the relying party, and the POST that answers
+/// is checked against the host it arrives at, as every other is.
+pub async fn begin_verify_anywhere(
+    database: &SqliteDatabase,
+    account_id: &str,
+) -> AccountResult<Begun> {
+    let allow: Vec<Value> = passkeys::of_account(database, account_id)
+        .await?
+        .into_iter()
+        .map(|passkey| serde_json::json!({ "type": "public-key", "id": passkey.id }))
+        .collect();
+    let challenge = challenges::issue(database, Purpose::Verify, Some(account_id), None).await?;
+    Ok(Begun {
+        options: serde_json::json!({
+            "challenge": challenge,
+            "timeout": 300_000,
+            "allowCredentials": allow,
+            "userVerification": "required",
+        }),
+        challenge,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct Made {
     pub user_handle: String,

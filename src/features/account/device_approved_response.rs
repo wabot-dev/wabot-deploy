@@ -3,4 +3,5 @@
 pub struct DeviceApprovedResponse {
     pub code: String,
     pub name: String,
+    pub expires_at: i64,
 }

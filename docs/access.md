@@ -280,8 +280,9 @@ fetches nothing the page did not have.
 
 All five phases are written, on the branch `access-passkeys`
 (2026-11-21), with the gate green against `wabot-feature-rest-controller`
-0.2.5 and `wabot-addon-auth-passkey` 0.2.0 as published (2026-11-22). **None of it has run on a node or been
-seen in a browser.**
+0.2.5 and `wabot-addon-auth-passkey` 0.2.0 as published (2026-11-22), and
+released as the v0.46.0 beta the same day. Jorge ran it on real nodes: the
+ceremonies held, and the pages were redone (below).
 
 - Five tests walk the ceremonies over HTTP with the addon's software
   authenticator (`features::account::account_rest_controller`): setup
@@ -301,6 +302,55 @@ seen in a browser.**
 - `restore-node` ends every session and says that what was revoked since
   the backup is back.
 - A domain form says when passkeys answer for the current name.
+
+### The second look (2026-11-22)
+
+v0.46.0 ran on real nodes and the mechanism held; the pages did not. What
+changed, from FIDO's, Google's and Chrome's guidance on passkey UX:
+
+- **Signing in** is one column with no cards, saying which console it is.
+  The username field carries `autocomplete="username webauthn"` and a
+  conditional request waits on it, so the browser offers this host's
+  passkeys as soon as it is touched; the button asks with nothing typed.
+  While anybody here has a password, the field is also the password's,
+  through `form=`, and the password folds under a disclosure. Closing the
+  browser's sheet says nothing; only a refusal from the server does.
+  Opened by its address, the page offers the node's name and
+  `wabot-deploy sign-in-link`, not a button that cannot work.
+- **A device asking** puts a dot on the account icon in the header, on
+  every page, and the icon opens a panel — who, from where, with which
+  passkey, and both answers — over the page rather than a notice pushing
+  it down. `/account/live` sends the control again when it changes, so a
+  request appears without reloading, opens the panel when it arrives
+  while somebody watches, and disappears from every tab once one answers.
+  The tab's title gets "(1)". Without scripting the dot is as of the page
+  and the panel is a `popover`. Its "It was me" carries a verification
+  without knowing the host (`ceremonies::begin_verify_anywhere`): the
+  browser fills in its own, and the POST is checked where it lands.
+- **The waiting device** numbers the three steps, takes the code as it is
+  shown (`482 913`), counts down to the request's expiry, and leaves
+  "Trust this device" unticked with why.
+- **Your account** is one thing with tabs: its name above them and no
+  breadcrumb on any, because `/account` had one crumb and
+  `/account/devices` two and the page jumped between tabs. Lists at a
+  reading width instead of tables. A passkey is named by the password
+  manager that holds it, from the AAGUID against the community's list
+  (`domain::values::passkey_provider`, names only), then by its browser;
+  it can be renamed. Removing is a cross, not a bin — the password
+  manager keeps its copy — and the last one asks first. The page tells
+  the browser which passkeys it still knows (`signalAllAcceptedCredentials`).
+  Times read in Spanish too.
+
+A passkey made before 0086 has no AAGUID and keeps its browser's name:
+only the ceremony that makes one carries it.
+
+Two passkeys from one password manager on one account should not happen —
+`excludeCredentials` lists the account's own — and the first node had
+two from Safari four minutes apart. The list is right and decoded; what
+Safari does with it when iCloud Keychain already holds one for the same
+user is not known. The tell is "last used": if the older one stops being
+used once the newer exists, Safari replaced it in the keychain and the
+older row is dead. A device that refuses to make a second now says so.
 
 Before it ships:
 

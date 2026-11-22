@@ -43,6 +43,7 @@ impl ApproveDevice<'_> {
         Ok(DeviceApprovedResponse {
             code,
             name: pending.name,
+            expires_at: pending.expires_at,
         })
     }
 }

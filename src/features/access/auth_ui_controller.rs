@@ -112,11 +112,29 @@ impl AuthUiController {
         };
         let password =
             accounts::any_password_in(&self.state.database, self.asked.scope.as_deref()).await?;
+        let named = match (&passkey, &self.asked.scope) {
+            (None, None) => {
+                match crate::infra::node::settings::domain(&self.state.database).await {
+                    Some(_) => Some(self.state.base_url_for(None).await),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        let host = self
+            .asked
+            .host
+            .rsplit_once(':')
+            .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| self.asked.host.clone());
         layout::head("Sign in");
         let page = crate::features::access::guest_sign_in_page::SignIn {
             query_error: query.error.as_deref(),
+            host: &host,
             passkey: passkey.as_ref(),
             password,
+            named: named.as_deref(),
         };
         Ok(crate::features::access::guest_sign_in_page::render(&page)
             .into_view()
@@ -129,11 +147,22 @@ impl AuthUiController {
         if signed_in(&self.auth).is_some() {
             return Ok(Redirect::found("/").into());
         }
-        let open = match &self.asked.pending {
-            Some(token) => accounts::requests::by_browser(&self.state.database, token)
+        let request = match &self.asked.pending {
+            Some(token) => accounts::requests::by_browser(&self.state.database, token).await?,
+            None => None,
+        };
+        let whose = match &request {
+            Some(request) => accounts::find(&self.state.database, &request.account_id)
                 .await?
-                .is_some(),
-            None => false,
+                .map(|account| account.username),
+            None => None,
+        };
+        let open = match (&request, &whose) {
+            (Some(request), Some(username)) => Some((
+                username.as_str(),
+                (request.expires_at - crate::infra::clock::now_ms()) / 1000,
+            )),
+            _ => None,
         };
         layout::head("Sign in");
         let page = crate::features::access::guest_approval_page::Approval {

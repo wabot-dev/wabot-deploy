@@ -1070,7 +1070,7 @@
   // `create` makes one, `get` signs in with one, `verify` proves who is
   // asking before something that makes a way in.
   wabot.island('passkey', function (host, props) {
-    var form = host.querySelector('form');
+    var form = host.querySelector('form[data-passkey]') || host.querySelector('form');
     if (!form || !props) return null;
     var error = host.querySelector('[data-passkey-error]');
     var say = function (text) {
@@ -1145,20 +1145,88 @@
       var input = form.querySelector('input[name="' + name + '"]');
       if (input) input.value = value;
     };
+    // Closing the browser's sheet, or letting it time out, is somebody
+    // changing their mind: it says nothing. A device that already holds a
+    // passkey for the account is told so, because excludeCredentials is
+    // what refused it and nothing else would explain the refusal.
+    var failed = function (reason) {
+      var name = reason && reason.name;
+      if (name === 'NotAllowedError' || name === 'AbortError') return say('');
+      if (name === 'InvalidStateError' && props.create) return say(props.exists);
+      say(props.failed);
+    };
+    var supported = !!(window.PublicKeyCredential && navigator.credentials);
     var ready = false;
+    var waiting = null;
+    var send = function (submitter) {
+      ready = true;
+      if (form.requestSubmit) {
+        form.requestSubmit(submitter && submitter.form === form ? submitter : undefined);
+      } else {
+        form.submit();
+      }
+    };
+
+    // The username field offers this host's passkeys as soon as it is
+    // touched: a request left waiting with `mediation: conditional`, which
+    // the browser answers from its autofill. It is aborted before the
+    // button asks, because a browser holds one request at a time.
+    var field = props.autofill ? host.querySelector('input[autocomplete~="webauthn"]') : null;
+    var stop = function () {
+      if (waiting) {
+        waiting.abort();
+        waiting = null;
+      }
+    };
+    var listen = function () {
+      if (!field || !props.get || !supported || waiting) return;
+      if (!PublicKeyCredential.isConditionalMediationAvailable) return;
+      PublicKeyCredential.isConditionalMediationAvailable().then(function (available) {
+        if (!available || waiting) return;
+        waiting = new AbortController();
+        var asked = request(props.get);
+        asked.mediation = 'conditional';
+        asked.signal = waiting.signal;
+        navigator.credentials.get(asked).then(
+          function (credential) {
+            waiting = null;
+            put('credential', answered(credential));
+            send();
+          },
+          function () {
+            waiting = null;
+          }
+        );
+      }, function () {});
+    };
+    listen();
+
+    // Enter in the username field asks for a passkey, unless a password
+    // was typed: the field belongs to the password's form while there is
+    // one, and a bare name would be refused there.
+    var onKey = function (event) {
+      if (event.key !== 'Enter') return;
+      var password = host.querySelector('input[type="password"]');
+      if (password && password.value) return;
+      event.preventDefault();
+      form.requestSubmit ? form.requestSubmit() : form.submit();
+    };
+    if (field) field.addEventListener('keydown', onKey);
+
     var submit = function (event) {
       if (ready) {
         ready = false;
         return;
       }
       if (!props.create && !props.get && !props.verify) return;
-      if (!(window.PublicKeyCredential && navigator.credentials)) {
+      if (!supported) {
         if (props.optional && !props.verify) return;
         event.preventDefault();
         say(props.unsupported);
         return;
       }
       event.preventDefault();
+      stop();
       var submitter = event.submitter;
       say('');
       var steps = Promise.resolve();
@@ -1178,8 +1246,8 @@
       }
       if (props.create) {
         steps = steps.then(function () {
-          var field = props.name ? form.querySelector('[name="' + props.name + '"]') : null;
-          var name = field ? field.value.trim() : props.user || '';
+          var named = props.name ? form.querySelector('[name="' + props.name + '"]') : null;
+          var name = named ? named.value.trim() : props.user || '';
           return navigator.credentials
             .create(creation(props.create, name))
             .then(function (credential) {
@@ -1189,21 +1257,106 @@
       }
       steps.then(
         function () {
-          ready = true;
-          if (form.requestSubmit) {
-            form.requestSubmit(submitter && submitter.form === form ? submitter : undefined);
-          } else {
-            form.submit();
-          }
+          send(submitter);
         },
-        function () {
-          say(props.failed);
+        function (reason) {
+          failed(reason);
+          listen();
         }
       );
     };
     form.addEventListener('submit', submit);
+
+    // Tell the password manager which of this account's passkeys this
+    // console still knows, so one removed here stops being offered.
+    if (props.known && window.PublicKeyCredential && PublicKeyCredential.signalAllAcceptedCredentials) {
+      PublicKeyCredential.signalAllAcceptedCredentials({
+        rpId: props.known.rpId,
+        userId: props.known.userId,
+        allAcceptedCredentialIds: props.known.ids
+      }).catch(function () {});
+    }
+
     return function () {
+      stop();
       form.removeEventListener('submit', submit);
+      if (field) field.removeEventListener('keydown', onKey);
+    };
+  });
+
+  // How long a code or a link has left, to the second. The page rendered
+  // the minutes; this only counts them down, from when it arrived.
+  wabot.island('countdown', function (host, props) {
+    var out = host.querySelector('[data-countdown]');
+    if (!out || !props) return null;
+    var until = Date.now() + (props.left || 0) * 1000;
+    var tick = function () {
+      var left = Math.max(0, Math.round((until - Date.now()) / 1000));
+      if (left === 0) {
+        out.textContent = props.over;
+        return false;
+      }
+      var seconds = left % 60;
+      out.textContent = props.running.replace(
+        '{}',
+        Math.floor(left / 60) + ':' + (seconds < 10 ? '0' : '') + seconds
+      );
+      return true;
+    };
+    if (!tick()) return null;
+    var timer = setInterval(function () {
+      if (!tick()) clearInterval(timer);
+    }, 1000);
+    return function () {
+      clearInterval(timer);
+    };
+  });
+
+  // The account's icon in the header: a dot on every open page when a
+  // device asks to sign in, gone from all of them once one answers. What
+  // it swaps in is rendered by the server, forms and all; this decides
+  // only when. A request that arrives while somebody watches opens the
+  // panel, because the person approving is the one who just tried to sign
+  // in on the other device.
+  wabot.island('account-live', function (host, props) {
+    var control = host.querySelector('[data-account-control]');
+    if (!control || typeof EventSource === 'undefined') return null;
+    var key = props.key;
+    var asking = props.asking;
+    var title = function () {
+      var bare = document.title.replace(/^\(1\) /, '');
+      document.title = asking ? '(1) ' + bare : bare;
+    };
+    title();
+    var source = new EventSource('/account/live');
+    source.onmessage = function (event) {
+      var data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+      if (data.key === key) return;
+      var arrived = data.asking && data.asking !== asking;
+      key = data.key;
+      asking = data.asking;
+      control.innerHTML = data.html;
+      title();
+      wabot.unmountRemoved();
+      wabot.hydrateAll();
+      var panel = control.querySelector('[popover]');
+      if (arrived && panel && panel.showPopover) {
+        try {
+          panel.showPopover();
+        } catch (e) {}
+      }
+    };
+    source.onerror = function () {
+      if (source.readyState === EventSource.CLOSED) source = null;
+    };
+    return function () {
+      if (source) source.close();
+      document.title = document.title.replace(/^\(1\) /, '');
     };
   });
 })();

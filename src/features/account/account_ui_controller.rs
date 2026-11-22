@@ -46,6 +46,13 @@ impl AccountUiController {
     }
 }
 
+fn seconds_until(until: &str) -> i64 {
+    until
+        .parse::<i64>()
+        .map(|at| (at - crate::infra::clock::now_ms()) / 1000)
+        .unwrap_or(0)
+}
+
 #[ui_controller("/", app)]
 impl AccountUiController {
     #[view("/account")]
@@ -82,6 +89,7 @@ impl AccountUiController {
             add: add.as_ref(),
             verify: verify.as_ref(),
             username: &account.username,
+            account_id: &account.id,
             password,
             error: query.error.as_deref(),
             refused,
@@ -107,6 +115,7 @@ impl AccountUiController {
 
         layout::head("Your account");
         let page = crate::features::account::account_devices_page::DevicesPage {
+            username: &account.username,
             devices: &mine,
             this_device: this_device.as_deref(),
             trusted: held.as_ref().is_some_and(|held| held.trusted()),
@@ -131,8 +140,10 @@ impl AccountUiController {
         events::seen(&self.state.database, &account.id).await?;
 
         layout::head("Your account");
-        let page =
-            crate::features::account::account_activity_page::ActivityPage { events: &happened };
+        let page = crate::features::account::account_activity_page::ActivityPage {
+            username: &account.username,
+            events: &happened,
+        };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::account::account_activity_page::render(&page)
                 .render()
@@ -153,10 +164,17 @@ impl AccountUiController {
             (Some(_), true) => verify_prompt(&self.state, &self.auth, &self.asked.host).await,
             _ => None,
         };
+        let passkey = match &pending {
+            Some(request) => passkeys::find(&self.state.database, &request.passkey_id)
+                .await?
+                .map(|passkey| passkey.title().to_string()),
+            None => None,
+        };
 
         layout::head("Your account");
         let page = crate::features::account::account_approve_page::ApprovePage {
             request: pending.as_ref(),
+            passkey: passkey.as_deref(),
             trusted,
             verify: verify.as_ref(),
             error: query.error.as_deref(),
@@ -176,12 +194,16 @@ impl AccountUiController {
             return Ok(Redirect::found("/sign-in").into());
         };
         let taken = self.state.reveals.take(&query.nonce);
-        let parts = taken.as_deref().and_then(|text| text.split_once('\n'));
-        let shown = match parts {
-            Some((code, name)) => {
-                crate::features::account::account_shown_page::Shown::Code { code, name }
+        let parts: Vec<&str> = taken.as_deref().unwrap_or("").splitn(3, '\n').collect();
+        let shown = match parts.as_slice() {
+            [code, name, until] if !code.is_empty() => {
+                crate::features::account::account_shown_page::Shown::Code {
+                    code,
+                    name,
+                    left: seconds_until(until),
+                }
             }
-            None => crate::features::account::account_shown_page::Shown::Gone,
+            _ => crate::features::account::account_shown_page::Shown::Gone,
         };
         layout::head("Your account");
         let body = crate::shell::texts::language::scoped(account.language, || {
@@ -199,6 +221,11 @@ impl AccountUiController {
             return Ok(Redirect::found("/sign-in").into());
         };
         let taken = self.state.reveals.take(&query.nonce);
+        let (url, until) = taken
+            .as_deref()
+            .and_then(|text| text.split_once('\n'))
+            .unwrap_or_default();
+        let taken = Some(url.to_string()).filter(|url| !url.is_empty());
         let qr = taken.as_deref().and_then(|url| {
             qrcode::QrCode::new(url.as_bytes()).ok().map(|code| {
                 code.render::<qrcode::render::svg::Color>()
@@ -207,9 +234,11 @@ impl AccountUiController {
             })
         });
         let shown = match (&taken, &qr) {
-            (Some(url), Some(qr)) => {
-                crate::features::account::account_shown_page::Shown::Link { url, qr }
-            }
+            (Some(url), Some(qr)) => crate::features::account::account_shown_page::Shown::Link {
+                url,
+                qr,
+                left: seconds_until(until),
+            },
             _ => crate::features::account::account_shown_page::Shown::Gone,
         };
         layout::head("Your account");

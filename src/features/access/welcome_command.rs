@@ -39,7 +39,7 @@ impl Welcome<'_> {
                 database,
                 &account.id,
                 AccountEvent::PasskeyAdded,
-                &stored.name,
+                stored.title(),
                 address,
                 self.news,
             )

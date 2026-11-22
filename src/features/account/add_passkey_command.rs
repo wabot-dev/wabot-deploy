@@ -36,7 +36,7 @@ impl AddPasskey<'_> {
             database,
             &account.id,
             AccountEvent::PasskeyAdded,
-            &stored.name,
+            stored.title(),
             address,
             false,
         )

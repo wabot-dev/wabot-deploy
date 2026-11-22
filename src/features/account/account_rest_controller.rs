@@ -13,12 +13,14 @@ use crate::features::account::add_device_request::AddDeviceRequest;
 use crate::features::account::add_passkey_request::AddPasskeyRequest;
 use crate::features::account::answer_device_request::AnswerDeviceRequest;
 use crate::features::account::remove_passkey_request::RemovePasskeyRequest;
+use crate::features::account::rename_passkey_request::RenamePasskeyRequest;
 use crate::features::account::withdraw_device_request::WithdrawDeviceRequest;
 use crate::features::account::{
     node_user_add_a_device, node_user_add_a_passkey, node_user_approve_a_device,
-    node_user_refuse_a_device, node_user_remove_a_passkey, node_user_withdraw_a_device,
-    tenant_user_add_a_device, tenant_user_add_a_passkey, tenant_user_approve_a_device,
-    tenant_user_refuse_a_device, tenant_user_remove_a_passkey, tenant_user_withdraw_a_device,
+    node_user_refuse_a_device, node_user_remove_a_passkey, node_user_rename_a_passkey,
+    node_user_withdraw_a_device, tenant_user_add_a_device, tenant_user_add_a_passkey,
+    tenant_user_approve_a_device, tenant_user_refuse_a_device, tenant_user_remove_a_passkey,
+    tenant_user_rename_a_passkey, tenant_user_withdraw_a_device,
 };
 use crate::infra::accounts::{devices, sessions};
 use crate::shell::auth::*;
@@ -39,6 +41,68 @@ fn nth(request: &Request, index: usize) -> String {
 
 #[rest_controller("/")]
 impl AccountRestController {
+    /// What the header's icon says, sent again whenever it changes: a
+    /// device asking on every page somebody has open, and gone from all of
+    /// them once one of them answers.
+    ///
+    /// The session is asked again on every turn, so signing out everywhere
+    /// also stops a stream that was already open.
+    #[get("/account/live")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn live(&self, request: Request) -> RestResult<Response> {
+        use crate::shell::components::account_control::{AccountControl, Glance};
+        use wabot::rest::axum::body::{Body, Bytes};
+        use wabot::rest::axum::http::{header, StatusCode};
+
+        let (Some(account), Some(token)) = (
+            signed_in(&self.auth),
+            sessions::from_headers(request.headers()),
+        ) else {
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .expect("a constant response is well-formed"));
+        };
+        let database = self.state.database.clone();
+        let stream = async_stream::stream! {
+            let mut shown = String::new();
+            let mut quiet = 0u32;
+            loop {
+                if !matches!(sessions::find(&database, &token).await, Ok(Some(_))) {
+                    break;
+                }
+                let glance = Glance::read(&database, &account.id).await;
+                if glance.key() != shown {
+                    let control = AccountControl::load(&database, &account, false).await;
+                    shown = control.glance.key();
+                    let html = crate::shell::texts::language::scoped(account.language, || {
+                        control.inner()
+                    });
+                    let payload = serde_json::json!({
+                        "key": shown,
+                        "asking": control.glance.request.as_ref().map(|request| request.id.clone()),
+                        "html": html,
+                    });
+                    quiet = 0;
+                    yield Ok::<_, std::convert::Infallible>(Bytes::from(format!("data: {payload}\n\n")));
+                } else {
+                    quiet += 1;
+                    if quiet.is_multiple_of(10) {
+                        yield Ok(Bytes::from_static(b": still here\n\n"));
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        };
+        Ok(Response::builder()
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(Body::from_stream(stream))
+            .expect("a constant response is well-formed"))
+    }
+
     #[post("/account/passkeys")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -110,6 +174,34 @@ impl AccountRestController {
         }
     }
 
+    #[post("/account/passkeys/:id/rename")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn rename_a_passkey(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let passkey_id = nth(&request, 2);
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = RenamePasskeyRequest {
+            passkey_id,
+            label: field(&form, "label").to_string(),
+        };
+        let renamed = match account.tenant_id {
+            Some(_) => {
+                tenant_user_rename_a_passkey::run(&self.state.database, &account, &asked).await
+            }
+            None => node_user_rename_a_passkey::run(&self.state.database, &account, &asked).await,
+        };
+        match renamed {
+            Ok(()) => Ok(see_other("/account")),
+            Err(reason) => Ok(back_with_error("/account", &reason)),
+        }
+    }
+
     #[post("/account/devices/:id/delete")]
     #[raw]
     #[middleware(SessionMiddleware)]
@@ -162,7 +254,10 @@ impl AccountRestController {
         match link {
             Ok(link) => {
                 let url = format!("https://{}/link/{}", browser.host, link.token);
-                let nonce = self.state.reveals.stash(url);
+                let nonce = self
+                    .state
+                    .reveals
+                    .stash(format!("{url}\n{}", link.expires_at));
                 Ok(see_other(&format!(
                     "/account/added?{}",
                     encode("nonce", &nonce)
@@ -200,10 +295,10 @@ impl AccountRestController {
         };
         match approved {
             Ok(approved) => {
-                let nonce = self
-                    .state
-                    .reveals
-                    .stash(format!("{}\n{}", approved.code, approved.name));
+                let nonce = self.state.reveals.stash(format!(
+                    "{}\n{}\n{}",
+                    approved.code, approved.name, approved.expires_at
+                ));
                 Ok(see_other(&format!(
                     "/account/code?{}",
                     encode("nonce", &nonce)
@@ -431,13 +526,14 @@ pub(crate) mod tests {
         assert!(shown.starts_with("/account/code?"), "{shown}");
         let body = page(&console, &shown, &operator).await.body;
         let code = body
-            .split("<pre class=\"code-big\">")
+            .split("<p class=\"code-big\">")
             .nth(1)
             .and_then(|rest| rest.split('<').next())
             .expect("six digits")
             .trim()
             .to_string();
-        assert_eq!(code.len(), 6, "{code}");
+        assert_eq!(code.len(), 7, "two threes, as they are read: {code}");
+        assert_eq!(code.matches(char::is_numeric).count(), 6, "{code}");
 
         let joined = post(
             &console,
@@ -593,7 +689,10 @@ pub(crate) mod tests {
         let session = pair(&session);
 
         let body = page(&console, "/account", &session).await.body;
-        assert!(body.contains("Your first passkey deletes it"), "{body}");
+        assert!(
+            body.contains("Your first passkey deletes your password"),
+            "{body}"
+        );
         let challenge = field_on(&body, "challenge");
         let device = SoftAuthenticator::new();
         let made = device.register(&rp(), &challenge, jorge.id.as_bytes());
@@ -616,5 +715,108 @@ pub(crate) mod tests {
         );
         let page = page(&console, "/sign-in", "").await.body;
         assert!(!page.contains("name=\"password\""), "{page}");
+    }
+
+    /// A name its owner gave it, and back to where it lives when the
+    /// field is emptied. Nobody renames another account's passkey.
+    #[tokio::test]
+    async fn a_passkey_is_called_what_its_owner_names_it() {
+        let console = Console::new().await;
+        let (_, operator, _) = claimed(&console).await;
+        let jorge = crate::infra::accounts::named(&console.database, "jorge")
+            .await
+            .expect("read")
+            .remove(0);
+        let id = crate::infra::accounts::passkeys::of_account(&console.database, &jorge.id)
+            .await
+            .expect("read")
+            .remove(0)
+            .id;
+
+        let renamed = post(
+            &console,
+            &format!("/account/passkeys/{id}/rename"),
+            &operator,
+            &[("label", "  Work   laptop ")],
+        )
+        .await;
+        assert_eq!(renamed.header("location"), Some("/account"));
+        let body = page(&console, "/account", &operator).await.body;
+        assert!(body.contains("Work laptop"), "{body}");
+
+        post(
+            &console,
+            &format!("/account/passkeys/{id}/rename"),
+            &operator,
+            &[("label", "")],
+        )
+        .await;
+        let passkey = crate::infra::accounts::passkeys::find(&console.database, &id)
+            .await
+            .expect("read")
+            .expect("still there");
+        assert_eq!(passkey.label, None);
+
+        let refused = post(
+            &console,
+            "/account/passkeys/somebody-elses/rename",
+            &operator,
+            &[("label", "mine now")],
+        )
+        .await;
+        assert!(
+            refused
+                .header("location")
+                .is_some_and(|to| to.starts_with("/account?error=")),
+            "{:?}",
+            refused.header("location")
+        );
+    }
+
+    /// The header's icon follows a stream, and a stranger gets a status
+    /// rather than a redirect an `EventSource` cannot follow.
+    #[tokio::test]
+    async fn the_header_s_stream_answers_only_a_session() {
+        let console = Console::new().await;
+        claimed(&console).await;
+
+        let stranger = page(&console, "/account/live", "").await;
+
+        stranger.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// The field offers this host's passkeys from the browser's autofill,
+    /// and while a password exists here it is the password's field too,
+    /// so one field serves both ways in.
+    #[tokio::test]
+    async fn the_username_field_offers_passkeys_and_the_password_folds_under_them() {
+        let console = Console::new().await;
+        claimed(&console).await;
+
+        let passkeys_only = page(&console, "/sign-in", "").await.body;
+        assert!(
+            passkeys_only.contains("autocomplete=\"username webauthn\""),
+            "{passkeys_only}"
+        );
+        assert!(
+            passkeys_only.contains("autofill&quot;:true")
+                || passkeys_only.contains("\"autofill\":true"),
+            "{passkeys_only}"
+        );
+        assert!(!passkeys_only.contains("password-form"), "{passkeys_only}");
+
+        crate::infra::accounts::legacy_password(
+            &console.database,
+            &crate::infra::accounts::named(&console.database, "jorge")
+                .await
+                .expect("read")
+                .remove(0)
+                .id,
+            "an old password",
+        )
+        .await;
+        let both = page(&console, "/sign-in", "").await.body;
+        assert!(both.contains("form=\"password-form\""), "{both}");
+        assert!(both.contains("<details class=\"other-way\">"), "{both}");
     }
 }

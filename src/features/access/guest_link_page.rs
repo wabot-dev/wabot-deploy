@@ -27,44 +27,43 @@ pub fn render<'a>(page: &'a LinkPage<'a>) -> impl Renderable + 'a {
         ..Default::default()
     };
     let form = rsx! {
-        <form method="post" action=(format!("/link/{}", page.token)) class="card stack"
+        <form method="post" action=(format!("/link/{}", page.token)) class="stack"
               data-wabot-reload>
             (prompt.fields())
             @if !page.device {
                 <label class="check">
                     <input type="checkbox" name="trust" value="on">
-                    (t("Trust this device"))
+                    <span>
+                        (t("Trust this device"))
+                        <span class="check-hint">(t("Not on a computer somebody else uses."))</span>
+                    </span>
                 </label>
             }
-            <div class="actions">
-                @if page.device {
-                    <button type="submit">(t("Add this device"))</button>
-                } @else {
-                    <button type="submit">(t("Sign in"))</button>
-                }
-            </div>
+            @if page.device {
+                <button type="submit" class="block">(t("Add this device"))</button>
+            } @else {
+                <button type="submit" class="block">(t("Sign in"))</button>
+            }
         </form>
     }
     .render()
     .into_inner();
     rsx! {
     (layout::style_tag())
-    <main class="shell narrow">
-        (mark("Sign in"))
+    <main class="shell narrow guest">
+        (mark(t("Sign in")))
         @if let Some(message) = &page.error {
             (layout::error_note(message))
         }
         @if let Some(username) = page.username {
-            <p class="tagline">(t("Signing in as "))<strong>(username)</strong>"."</p>
+            <p class="guest-host">(t("Signing in as "))<strong>(username)</strong>"."</p>
             @if page.passkey.is_some() {
                 <p class="field-hint">(t("Your device makes a passkey for this console as you sign in."))</p>
             }
             (prompt.around(form.clone()))
         } @else {
-            <section class="card stack">
-                <p>(t("This link is not valid. It may have been used already, or expired."))</p>
-                <p><a href="/sign-in">(t("Sign in"))</a></p>
-            </section>
+            <p>(t("This link is not valid. It may have been used already, or expired."))</p>
+            <p><a class="btn block" href="/sign-in">(t("Sign in"))</a></p>
         }
     </main>
     }

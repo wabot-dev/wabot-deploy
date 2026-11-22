@@ -6,13 +6,13 @@ use hypertext::prelude::*;
 pub fn mark(heading: &str) -> impl Renderable + '_ {
     rsx! {
         <header class="mark">
-            <img
-                src=(format!("{}/wabot-logo.png", crate::shell::assets::MOUNT))
-                alt="Wabot" width="36" height="36">
-            <div class="stack-sm">
-                <h1>(heading)</h1>
-                <p class="tagline">("wabot-deploy")</p>
-            </div>
+            <span class="mark-brand">
+                <img
+                    src=(format!("{}/wabot-logo.png", crate::shell::assets::MOUNT))
+                    alt="Wabot" width="22" height="22">
+                ("wabot-deploy")
+            </span>
+            <h1>(heading)</h1>
         </header>
     }
 }

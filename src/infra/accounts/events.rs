@@ -14,6 +14,8 @@ pub struct Event {
     pub detail: String,
     pub address: Option<String>,
     pub at: i64,
+    /// Not yet seen on the Activity tab.
+    pub unread: bool,
 }
 
 /// `news` is false for what the owner just did themselves in this
@@ -84,8 +86,10 @@ pub async fn of_account(
         .read(move |connection| {
             connection
                 .prepare(
-                    "SELECT \"kind\", \"detail\", \"address\", \"at\" FROM account_event \
-                     WHERE \"account_id\" = ?1 ORDER BY \"at\" DESC, \"id\" DESC LIMIT ?2",
+                    "SELECT e.\"kind\", e.\"detail\", e.\"address\", e.\"at\", \
+                     e.\"id\" > COALESCE(a.\"activity_seen_id\", 0) \
+                     FROM account_event e JOIN account a ON a.\"id\" = e.\"account_id\" \
+                     WHERE e.\"account_id\" = ?1 ORDER BY e.\"at\" DESC, e.\"id\" DESC LIMIT ?2",
                 )?
                 .query_map((account, limit as i64), |row| {
                     Ok((
@@ -93,18 +97,20 @@ pub async fn of_account(
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, bool>(4)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()
         })
         .await?
         .into_iter()
-        .filter_map(|(kind, detail, address, at)| {
+        .filter_map(|(kind, detail, address, at, unread)| {
             Some(Event {
                 kind: AccountEvent::parse(&kind)?,
                 detail,
                 address,
                 at,
+                unread,
             })
         })
         .collect())

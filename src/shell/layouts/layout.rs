@@ -94,22 +94,7 @@ pub fn typed(at_ms: i64) -> String {
 /// the node keeps. Absolute dates are for release notes, which come
 /// with their own.
 pub fn when(at_ms: i64) -> String {
-    let seconds = (crate::shell::state::now_ms() - at_ms) / 1000;
-    match seconds {
-        // Clock skew, or a row written in the same tick.
-        s if s < 0 => "just now".into(),
-        s if s < 60 => "just now".into(),
-        s if s < 3600 => plural(s / 60, "minute"),
-        s if s < 86_400 => plural(s / 3600, "hour"),
-        s => plural(s / 86_400, "day"),
-    }
-}
-
-fn plural(count: i64, unit: &str) -> String {
-    match count {
-        1 => format!("1 {unit} ago"),
-        many => format!("{many} {unit}s ago"),
-    }
+    crate::shell::texts::sentences::ago((crate::shell::state::now_ms() - at_ms) / 1000)
 }
 
 pub fn error_note(message: &str) -> impl Renderable + '_ {
@@ -331,9 +316,175 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
 /* A DKIM key is one word several hundred characters long. */
 .record-value code { word-break: break-all; }
 
-.mark { display: flex; align-items: center; gap: var(--sp-5); }
+.mark { display: flex; flex-direction: column; gap: var(--sp-5); }
 .mark h1 { font-size: var(--fs-3xl); margin: 0; letter-spacing: -0.03em; }
+.mark-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 600;
+  color: rgb(var(--c-fg));
+}
 .tagline { color: rgb(var(--c-fg-muted)); margin: 0; }
+
+/* A page somebody reaches without a session: one column, nothing in a
+   card. The cards it had were one button each, so the page was boxes
+   around single controls; the column is what is left when they go. */
+.guest { max-width: 23rem; padding-top: var(--sp-12); gap: var(--sp-6); }
+.guest .mark { gap: var(--sp-6); }
+.guest .mark + .guest-host { margin-top: calc(var(--sp-6) * -1 + var(--sp-1)); }
+.guest-host {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg-muted));
+  overflow-wrap: anywhere;
+}
+.guest-foot { margin: 0; font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); text-align: center; }
+.guest pre { margin: 0; overflow-x: auto; }
+.block { width: 100%; justify-content: center; }
+.with-icon { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.with-icon svg { flex: none; }
+
+/* The password, folded under the passkey while anybody here still has
+   one. A disclosure rather than a second card, so the page leads with the
+   way that needs nothing typed. */
+.other-way > summary {
+  cursor: pointer;
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: rgb(var(--c-fg-muted));
+  list-style: none;
+}
+.other-way > summary::-webkit-details-marker { display: none; }
+.other-way[open] > summary { margin-bottom: var(--sp-4); }
+
+/* Numbered because they are a sequence somebody follows on two devices. */
+.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: var(--sp-3); }
+.steps li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+}
+.steps li::before {
+  content: counter(step);
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: rgb(var(--c-bg-contrast));
+  color: rgb(var(--c-fg));
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+.code-field {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xl);
+  letter-spacing: 0.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.check-hint { display: block; font-weight: 400; font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); }
+.check:has(.check-hint) { align-items: flex-start; }
+.check:has(.check-hint) input { margin-top: 0.2rem; }
+
+/* Settings of one person, not a table of records: a reading width, and
+   each thing a row of its own with its actions at its end. */
+.reading { max-width: 45rem; }
+.list-head { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.list-head .card-label { margin: 0; }
+.items { display: flex; flex-direction: column; gap: 2px; border-radius: var(--r-lg); overflow: hidden; }
+.item {
+  background: rgb(var(--c-bg-raised));
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: center;
+}
+.item.unread { background: rgb(var(--c-brand) / 0.08); }
+.item p { margin: 0; }
+.item-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  color: rgb(var(--c-fg));
+  font-weight: 500;
+}
+.item-meta { margin: 0; font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); overflow-wrap: anywhere; }
+.item-actions { display: flex; align-items: center; gap: var(--sp-1); }
+.item-actions form { margin: 0; }
+.tile {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--r-md);
+  background: rgb(var(--c-bg-sunken));
+  color: rgb(var(--c-fg));
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.tile svg { width: 1.2rem; height: 1.2rem; }
+.tile-brand { background: rgb(var(--c-brand) / 0.15); color: rgb(var(--c-brand-ink)); }
+.hero {
+  background: rgb(var(--c-bg-raised));
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+.hero .tile { width: 2.75rem; height: 2.75rem; }
+.hero h2 { margin: 0; font-size: var(--fs-lg); }
+.hero form { margin-top: var(--sp-3); }
+.warning-bar {
+  background: rgb(var(--c-warning-bg));
+  color: rgb(var(--c-warning-fg));
+  border-radius: var(--r-lg);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.warning-bar p { margin: 0; }
+
+/* A small question asked over the page: renaming a passkey, or removing
+   the last one. A `popover`, so it opens without scripting; the page
+   behind dims rather than the box casting a shadow. */
+.dialog[popover] {
+  border: 0;
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  width: min(26rem, calc(100vw - 2 * var(--sp-4)));
+  background: rgb(var(--c-bg-raised));
+  color: rgb(var(--c-fg-body));
+}
+.dialog[popover]::backdrop { background: rgb(0 0 0 / 0.18); }
+.dialog p { margin: 0; }
+.dialog .actions { margin-top: var(--sp-4); }
+
+.code-big {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(2.5rem, 8vw, 3.5rem);
+  letter-spacing: 0.06em;
+  color: rgb(var(--c-fg));
+  font-variant-numeric: tabular-nums;
+}
+.qr-line { display: flex; flex-wrap: wrap; gap: var(--sp-5); align-items: center; }
+.qr-line > .stack-sm { flex: 1 1 14rem; min-width: 0; }
+.qr { background: #fff; border-radius: var(--r-md); padding: var(--sp-2); line-height: 0; }
+.qr svg { width: 11rem; height: 11rem; }
+.countdown { font-variant-numeric: tabular-nums; }
 
 .note {
   margin: var(--sp-4) 0 0;
