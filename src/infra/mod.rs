@@ -16,6 +16,7 @@ pub mod firewall;
 pub mod garage;
 pub mod isolation;
 pub mod ledger;
+pub mod metrics;
 pub mod network;
 pub mod node;
 pub mod reach;

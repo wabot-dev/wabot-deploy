@@ -77,6 +77,7 @@ mod tests {
             ("people", crate::features::people::texts::TABLE),
             ("projects", crate::features::projects::texts::TABLE),
             ("services", crate::features::services::texts::TABLE),
+            ("stability", crate::features::stability::texts::TABLE),
             ("updates", crate::features::updates::texts::TABLE),
         ]
     }
@@ -256,6 +257,9 @@ mod tests {
         "Access key id",
         // The word S3 users say in both languages — `docs/buckets.md`.
         "Buckets",
+        // The console already says backup in Spanish ("Solo backups"), and
+        // OOM kill is the kernel's own term, which is what gets searched.
+        "Backups",
         "CPU",
         // The protocol, and the field every DNS provider calls this: a
         // record is copied from a provider's screen, and the labels have to
@@ -275,6 +279,7 @@ mod tests {
         "Internet",
         "Let's Encrypt",
         "Logs",
+        "OOM kill",
         "Secret access key",
         // The word for the identifier itself, which is what goes in a
         // URL and in a `docker push` — CLAUDE.md's rule that a slug is

@@ -1,6 +1,7 @@
 //! Visual pieces more than one page uses.
 pub mod action_button;
 pub mod allowlist_field;
+pub mod declaration;
 pub mod mark;
 pub mod node_capabilities;
 pub mod node_certificate;

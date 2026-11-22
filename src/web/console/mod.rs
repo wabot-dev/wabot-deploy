@@ -55,6 +55,7 @@ use crate::features::services::{
     service_redirect_rest_controller, service_redirect_ui_controller, service_rest_controller,
     service_ui_controller,
 };
+use crate::features::stability::service_stability_ui_controller;
 use crate::features::updates::{update_rest_controller, update_ui_controller};
 use crate::infra::config::Config;
 use crate::shell::state::ConsoleState;
@@ -113,6 +114,7 @@ pub fn register(
         service_rest_controller::ServiceRestController,
         service_redirect_ui_controller::ServiceRedirectUiController,
         service_redirect_rest_controller::ServiceRedirectRestController,
+        service_stability_ui_controller::ServiceStabilityUiController,
         tenant_ui_controller::TenantUiController,
         tenant_rest_controller::TenantRestController,
         tenant_people_ui_controller::TenantPeopleUiController,
@@ -148,6 +150,9 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
         container, pages,
     );
     let pages = zone_ui_controller::ZoneUiController::register_ui_routes(container, pages);
+    let pages = service_stability_ui_controller::ServiceStabilityUiController::register_ui_routes(
+        container, pages,
+    );
 
     let forms = auth_rest_controller::AuthRestController::register_routes(container, forms);
     let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);

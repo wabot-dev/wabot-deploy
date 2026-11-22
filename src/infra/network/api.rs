@@ -152,6 +152,24 @@ pub struct LogFollowed {
     pub from: u64,
 }
 
+/// Which copy's measurements and events, over which window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryWanted {
+    pub project: String,
+    pub service: String,
+    pub slot: u32,
+    pub from: i64,
+    pub to: i64,
+}
+
+/// What a copy did on the node running it: its ten-minute readings and
+/// what happened to it there.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub metrics: Vec<crate::domain::entities::copy_metric::CopyMetric>,
+    pub events: Vec<crate::domain::entities::service_event::ServiceEvent>,
+}
+
 /// How much of a log crosses at once.
 ///
 /// The same ceiling the local page reads with, so the two views are the

@@ -446,6 +446,14 @@ pub fn follows_logs(version: Option<&str>) -> bool {
     at_least(version, FOLLOWS_LOGS_SINCE)
 }
 
+/// The first release that keeps what its copies measured and answers for
+/// them. It has to be the version this ships in.
+pub const HISTORY_SINCE: &str = "0.45.0";
+
+pub fn keeps_history(version: Option<&str>) -> bool {
+    at_least(version, HISTORY_SINCE)
+}
+
 fn at_least(version: Option<&str>, since: &str) -> bool {
     use crate::infra::update::github::Version;
     match (version.and_then(Version::parse), Version::parse(since)) {

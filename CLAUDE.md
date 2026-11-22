@@ -247,8 +247,8 @@ shipped as bugs before anyone noticed:
 So client behaviour goes through `wabot.island(id, mount)` and a
 `<wabot-island>` host, which the runtime re-hydrates after every swap
 and tears down when the host leaves. `assets/console.js` registers
-seven: `go`, `fields`, `copy`, `project-live`, `updates-live`,
-`node-live` and `logs-live`. Prefer declarative — the markup carries `data-when` /
+eight: `go`, `fields`, `copy`, `project-live`, `updates-live`,
+`node-live`, `logs-live` and `stability`. Prefer declarative — the markup carries `data-when` /
 `data-required-when`, so a new dependent field is an attribute rather
 than another script.
 
@@ -608,6 +608,14 @@ happened:
   node older than 0.42.0 can still arrive with no memory ceiling.
 - A running container no row claims — what a restore from an older
   backup leaves — is on no page.
+- A service's Stability tab (`docs/stability.md`) judges availability,
+  memory, CPU, traffic, disk, backups and replicas from ten-minute rows
+  every node writes for the copies it runs, and events written where they
+  happen. Crash, OOM kill, stop, start and deploy ran on the VM, and a far
+  copy's history between the two VMs on 2026-11-21. Not yet: the edge's
+  5xx per service and a standby's lag in seconds; a copy removed from a
+  service takes its history off the page. `errand::HISTORY_SINCE` is
+  0.45.0 for the reason `DIRECTORY_SINCE` was.
 - A store of buckets is one copy, on the node chosen when it was made —
   "Runs on" is written and has not run between two machines. Each bucket
   is `<bucket>.<domain>`, with an HTTP-01 certificate of its own; the

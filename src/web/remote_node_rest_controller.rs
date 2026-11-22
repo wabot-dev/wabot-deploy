@@ -509,6 +509,51 @@ impl RemoteNodeRestController {
     /// each of those would be a TLS handshake over the overlay and a walk
     /// of the service table on both machines for a line or none. Guarded
     /// by the same question as [`Self::replica_log`].
+    /// What a copy placed here by the caller measured, and what happened
+    /// to it here. Guarded by the same question as its log.
+    #[post("/replica-history")]
+    #[raw]
+    async fn replica_history(&self, request: Request) -> RestResult<Response> {
+        let (node, bytes) = match self.caller_and_body(request).await {
+            Ok(asked) => asked,
+            Err(response) => return Ok(response),
+        };
+        let Ok(asked) = serde_json::from_slice::<HistoryWanted>(&bytes) else {
+            return Ok(refuse(
+                StatusCode::BAD_REQUEST,
+                "that is not a history request",
+            ));
+        };
+        let container = match self
+            .placed_by(&node, &asked.project, &asked.service, asked.slot)
+            .await
+        {
+            Ok(container) => container,
+            Err(response) => return Ok(response),
+        };
+        let metrics = crate::infra::repositories::copy_metrics::of_container(
+            &self.database,
+            &container,
+            asked.from,
+            asked.to,
+        )
+        .await;
+        let events = crate::infra::repositories::service_events::of_container(
+            &self.database,
+            &container,
+            asked.from,
+            asked.to,
+        )
+        .await;
+        match (metrics, events) {
+            (Ok(metrics), Ok(events)) => Ok(json(StatusCode::OK, &History { metrics, events })),
+            _ => Ok(refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the measurements could not be read",
+            )),
+        }
+    }
+
     #[post("/replica-log/live")]
     #[raw]
     async fn replica_log_live(&self, request: Request) -> RestResult<Response> {

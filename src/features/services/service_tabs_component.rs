@@ -10,6 +10,7 @@ use crate::shell::components::object_tabs::{object_tabs, ObjectTab};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServicePlace {
     Overview,
+    Stability,
     Buckets,
     Logs,
     Settings,
@@ -31,6 +32,11 @@ pub fn service_tabs(
         &base,
         place == ServicePlace::Overview,
     )];
+    tabs.push(ObjectTab::new(
+        t("Stability"),
+        format!("{base}/stability"),
+        place == ServicePlace::Stability,
+    ));
     if service.kind.is_store() {
         tabs.push(ObjectTab::new(
             t("Buckets"),

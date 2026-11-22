@@ -73,9 +73,26 @@ pub async fn mark_deployed(database: &SqliteDatabase, release_id: &str) -> Platf
                  WHERE \"service_id\" = (SELECT \"service_id\" FROM release WHERE \"id\" = ?1)",
                 [&id],
             )?;
+            let at = now_ms();
             connection.execute(
                 "UPDATE release SET \"deployed_at\" = ?2 WHERE \"id\" = ?1",
-                (&id, now_ms()),
+                (&id, at),
+            )?;
+            let (service_id, reference): (String, String) = connection.query_row(
+                "SELECT \"service_id\", \"reference\" FROM release WHERE \"id\" = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            crate::infra::repositories::service_events::insert(
+                connection,
+                &crate::infra::repositories::service_events::Happened {
+                    service_id: &service_id,
+                    container: None,
+                    kind: crate::domain::entities::service_event::EventKind::Deployed,
+                    at,
+                    code: None,
+                    detail: Some(&reference),
+                },
             )?;
             Ok(())
         })

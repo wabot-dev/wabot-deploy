@@ -269,6 +269,7 @@ pub async fn once(
 
     let mut volumes = copy_volumes(database, config, &into).await;
     let engines = back_up_engines(database, config, &into).await;
+    let refused = engines.refused.clone();
     // Moved out of the struct rather than cloned; `missed` below is what
     // the rest of this function needs from it.
     volumes.extend(engines.copied);
@@ -295,6 +296,7 @@ pub async fn once(
     // words — so a run that could not write one has produced nothing,
     // whatever else is on the disk.
     written?;
+    remember_backup(database, &manifest.volumes, &refused).await;
 
     if !engines.missed.is_empty() {
         println!();
@@ -1402,12 +1404,14 @@ async fn back_up_engines(
         return Engines {
             copied: Vec::new(),
             missed: vec!["the service rows could not be read".into()],
+            refused: Vec::new(),
         };
     };
     let deployer =
         crate::infra::deploy::Deployer::new(std::sync::Arc::new(database.clone()), config);
     let mut copied = Vec::new();
     let mut missed = Vec::new();
+    let mut refused = Vec::new();
 
     for service in services.iter().filter(|service| service.kind.is_database()) {
         let Some(project) = projects
@@ -1452,11 +1456,16 @@ async fn back_up_engines(
                 // Left on disk rather than removed: a half-written
                 // backup that somebody can look at beats one this
                 // command tidied away.
+                refused.push((service.id.clone(), reason.clone()));
                 missed.push(format!("{container} ({reason})"));
             }
         }
     }
-    Engines { copied, missed }
+    Engines {
+        copied,
+        missed,
+        refused,
+    }
 }
 
 /// What `back_up_engines` did, and what it could not do.
@@ -1473,6 +1482,7 @@ struct Engines {
     /// One per managed database **on this node** that could not be
     /// copied, with the reason.
     missed: Vec<String>,
+    refused: Vec<(String, String)>,
 }
 
 /// What a backup does with one directory under the volume root.
@@ -1558,6 +1568,109 @@ fn file_size(path: &Path) -> u64 {
 
 fn human(bytes: u64) -> String {
     crate::infra::node::memory::human(bytes)
+}
+
+/// What each service's copy came to, as an event on its own page: the
+/// manifest says what went in, and a database the engine refused says why
+/// it did not.
+async fn remember_backup(
+    database: &wabot::sqlite::SqliteDatabase,
+    copied: &[Copied],
+    refused: &[(String, String)],
+) {
+    use crate::domain::entities::service_event::EventKind;
+    use crate::infra::repositories::service_events::{self, Happened};
+    let owners = owners_of_containers(database).await;
+    let mut held: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for copy in copied {
+        let owner = copy
+            .service
+            .clone()
+            .or_else(|| owners.get(&copy.container).cloned());
+        if let Some(owner) = owner {
+            *held.entry(owner).or_default() += copy.bytes;
+        }
+    }
+    for (service, bytes) in held {
+        let detail = human(bytes);
+        let _ = service_events::record(
+            database,
+            Happened {
+                detail: Some(&detail),
+                ..Happened::now(&service, EventKind::BackedUp)
+            },
+        )
+        .await;
+    }
+    for (service, reason) in refused {
+        let _ = service_events::record(
+            database,
+            Happened {
+                detail: Some(reason),
+                ..Happened::now(service, EventKind::BackupFailed)
+            },
+        )
+        .await;
+    }
+}
+
+/// A run that failed as a whole fails every service it normally holds,
+/// once: the ones a previous run backed up and this one said nothing of.
+pub async fn remember_failed_run(
+    database: &wabot::sqlite::SqliteDatabase,
+    since: i64,
+    reason: &str,
+) {
+    use crate::domain::entities::service_event::EventKind;
+    use crate::infra::repositories::service_events::{self, Happened};
+    let Ok(services) = crate::infra::repositories::services::all(database, None).await else {
+        return;
+    };
+    for service in services {
+        let Ok(events) = service_events::of_service(database, &service.id, i64::MAX).await else {
+            continue;
+        };
+        let held_before = events.iter().any(|event| event.kind == EventKind::BackedUp);
+        let said = events.iter().any(|event| {
+            event.at >= since && matches!(event.kind, EventKind::BackedUp | EventKind::BackupFailed)
+        });
+        if held_before && !said {
+            let _ = service_events::record(
+                database,
+                Happened {
+                    detail: Some(reason),
+                    ..Happened::now(&service.id, EventKind::BackupFailed)
+                },
+            )
+            .await;
+        }
+    }
+}
+
+async fn owners_of_containers(
+    database: &wabot::sqlite::SqliteDatabase,
+) -> std::collections::BTreeMap<String, String> {
+    let mut owners = std::collections::BTreeMap::new();
+    let (Ok(services), Ok(projects), Ok(here)) = (
+        crate::infra::repositories::services::all(database, None).await,
+        crate::infra::repositories::projects::all(database).await,
+        crate::infra::repositories::replicas::here(database).await,
+    ) else {
+        return owners;
+    };
+    for replica in here {
+        let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
+            continue;
+        };
+        let Some(project) = projects.iter().find(|p| p.id == service.project_id) else {
+            continue;
+        };
+        owners.insert(
+            replica.container_id(&project.slug, &service.slug),
+            service.id.clone(),
+        );
+    }
+    owners
 }
 
 #[cfg(test)]

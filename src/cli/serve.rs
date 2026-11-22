@@ -441,6 +441,19 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 }
             }
         })
+        .service_with_cancel("measurements", {
+            let deployer = deployer.clone();
+            move |cancel| async move {
+                let mut sampler = crate::infra::metrics::Sampler::default();
+                loop {
+                    deployer.measure(&mut sampler).await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                    }
+                }
+            }
+        })
         // A copy that stopped on its own, started again with a growing
         // wait. Its first pass waits too: the boot's `reconcile` is
         // bringing up everything that is missing, and two passes starting

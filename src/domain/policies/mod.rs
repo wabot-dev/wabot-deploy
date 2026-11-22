@@ -12,6 +12,7 @@ pub mod postgres;
 pub mod presets;
 pub mod restarts;
 pub mod s3;
+pub mod stability;
 pub mod valkey;
 pub mod wal;
 pub mod zone_serial;

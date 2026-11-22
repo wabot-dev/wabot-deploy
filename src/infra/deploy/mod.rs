@@ -28,6 +28,7 @@ pub mod forwards;
 pub mod hosts;
 pub mod jobs;
 pub mod logs;
+mod measure;
 pub mod planner;
 pub mod quotas;
 pub mod restarts;
@@ -2857,6 +2858,9 @@ impl Deployer {
             return 0;
         };
         let mut started = 0;
+        let oom = restarts.killed_for_memory(
+            crate::infra::runtime::guard::read().map(|reading| reading.processes_killed),
+        );
 
         for replica in mine {
             let Some(service) = services.iter().find(|s| s.id == replica.service_id) else {
@@ -2919,12 +2923,43 @@ impl Deployer {
             };
 
             let id = replica.container_id(&project.slug, &service.slug);
-            let how = match observed {
-                Observed::Stopped { exit_code } => format!("it stopped with exit {exit_code}"),
-                _ => "it was not running".to_string(),
+            let exit = match observed {
+                Observed::Stopped { exit_code } => Some(exit_code),
+                _ => None,
+            };
+            let how = match exit {
+                Some(exit_code) => format!("it stopped with exit {exit_code}"),
+                None => "it was not running".to_string(),
             };
             let said = logs::last_words(&self.config.node.data_dir, &id);
             let at = time::OffsetDateTime::now_utc();
+            {
+                use crate::domain::entities::service_event::EventKind;
+                use crate::infra::repositories::service_events::{self, Happened};
+                let killed = oom && exit == Some(137);
+                let recorded = service_events::record(
+                    &self.database,
+                    Happened {
+                        container: Some(&id),
+                        code: exit.map(i64::from),
+                        detail: match killed {
+                            true => None,
+                            false => said.as_deref(),
+                        },
+                        ..Happened::now(
+                            &service.id,
+                            match killed {
+                                true => EventKind::OomKilled,
+                                false => EventKind::Crashed,
+                            },
+                        )
+                    },
+                )
+                .await;
+                if let Err(error) = recorded {
+                    tracing::warn!(%error, "could not record that a copy stopped");
+                }
+            }
             tracing::warn!(service = %service.slug, slot = replica.slot, attempt, %how,
                 "starting a copy again");
             if self.restart_copy(project, service, &replica).await {
@@ -4735,6 +4770,13 @@ impl Deployer {
                         {
                             tracing::warn!(%error, slot = state.slot, "could not record it");
                         }
+                        self.note_following(
+                            project.slug.as_str(),
+                            service,
+                            state.slot,
+                            state.active,
+                        )
+                        .await;
                         if !state.active {
                             tracing::warn!(
                                 service = %service.slug, slot = state.slot,
@@ -4755,6 +4797,43 @@ impl Deployer {
             }
         }
         asked
+    }
+
+    /// A standby that stops following opens an event and one that follows
+    /// again closes it, so the page has when and for how long, not only
+    /// what the column says now.
+    async fn note_following(&self, project: &str, service: &Service, slot: u32, following: bool) {
+        use crate::domain::entities::service_event::EventKind;
+        use crate::infra::repositories::service_events::{self, Happened};
+        let container =
+            crate::domain::entities::replica::container_id_for(project, &service.slug, slot);
+        let open = service_events::open(
+            &self.database,
+            &service.id,
+            &container,
+            EventKind::Unfollowed,
+        )
+        .await;
+        let outcome = match (open, following) {
+            (Ok(Some(event)), true) => {
+                service_events::close(&self.database, &event.id, crate::infra::clock::now_ms())
+                    .await
+            }
+            (Ok(None), false) => service_events::record(
+                &self.database,
+                Happened {
+                    container: Some(&container),
+                    ..Happened::now(&service.id, EventKind::Unfollowed)
+                },
+            )
+            .await
+            .map(|_| ()),
+            (Ok(_), _) => Ok(()),
+            (Err(error), _) => Err(error),
+        };
+        if let Err(error) = outcome {
+            tracing::warn!(%error, slot, "could not record whether a standby follows");
+        }
     }
 
     /// One question, in a container of the engine's own image.

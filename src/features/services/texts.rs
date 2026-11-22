@@ -140,6 +140,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Shared lists", "Listas compartidas"),
     ("Show everything kept", "Ver todo lo guardado"),
     ("Signed here", "Firmado aquí"),
+    ("Stability", "Estabilidad"),
     ("Started again", "Arrancada de nuevo"),
     ("Still running on that node", "Todavía corriendo en ese nodo"),
     ("Stop keeping", "Dejar de conservar"),

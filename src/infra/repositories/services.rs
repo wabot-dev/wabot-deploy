@@ -179,11 +179,36 @@ pub async fn set_desired_state(
     let stopped_at = (state == DesiredState::Stopped).then(crate::infra::clock::distinct_now_ms);
     database
         .write(move |connection| {
+            let before: Option<String> = connection
+                .query_row(
+                    "SELECT \"desired_state\" FROM service WHERE \"id\" = ?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .ok();
+            let at = now_ms();
             connection.execute(
                 "UPDATE service SET \"desired_state\" = ?2, \"updated_at\" = ?3, \
                  \"stopped_at\" = COALESCE(?4, \"stopped_at\") WHERE \"id\" = ?1",
-                (id, state.as_str(), now_ms(), stopped_at),
+                (&id, state.as_str(), at, stopped_at),
             )?;
+            if before.is_some_and(|before| before != state.as_str()) {
+                use crate::domain::entities::service_event::EventKind;
+                crate::infra::repositories::service_events::insert(
+                    connection,
+                    &crate::infra::repositories::service_events::Happened {
+                        service_id: &id,
+                        container: None,
+                        kind: match state {
+                            DesiredState::Stopped => EventKind::Stopped,
+                            DesiredState::Running => EventKind::Started,
+                        },
+                        at,
+                        code: None,
+                        detail: None,
+                    },
+                )?;
+            }
             Ok(())
         })
         .await?;

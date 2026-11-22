@@ -824,6 +824,9 @@ mod tests {
     /// drawing: no file it read had a `style` attribute in it, and with no
     /// floor that passed. The organisation's quota card wrote its own
     /// width the whole time, and was found by a move, not by this.
+    ///
+    /// A style that places rather than sizes goes through
+    /// `shell::components::declaration`, for the same reason.
     #[test]
     fn every_meter_width_is_a_declaration() {
         // Assembled rather than written out, or this scan finds its own
@@ -845,7 +848,7 @@ mod tests {
                 let through = ["width(", "bar_width("].iter().any(|call| {
                     line.contains(&format!("node_usage_component::{call}"))
                         || (home && line.contains(&format!("({call}")))
-                });
+                }) || line.contains("declaration::");
                 if !through {
                     wrong.push(format!("{}:{}", path.display(), number + 1));
                 }

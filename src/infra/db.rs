@@ -332,6 +332,10 @@ fn migrations() -> Vec<Migration> {
             "0083_exits",
             include_str!("../../migrations/0083_exits.sql"),
         ),
+        Migration::new(
+            "0084_stability",
+            include_str!("../../migrations/0084_stability.sql"),
+        ),
     ]
 }
 

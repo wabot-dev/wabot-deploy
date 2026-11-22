@@ -799,4 +799,269 @@
       });
     };
   });
+
+  // ---- a service's stability -------------------------------------------
+  //
+  // Everything here is already on the page: the cells carry their verdict,
+  // the cards for each marker are rendered and hidden, and the numbers each
+  // chart was drawn from come in the props. So this adds pointing and
+  // asks the node for nothing.
+
+  var BINARY = [
+    ['GB', 1024 * 1024 * 1024],
+    ['MB', 1024 * 1024],
+    ['kB', 1024],
+  ];
+
+  var stabilityFormat = function (props) {
+    var decimal = function (value, places) {
+      var text = value.toFixed(places);
+      return props.comma ? text.replace('.', ',') : text;
+    };
+    var bytes = function (value) {
+      for (var i = 0; i < BINARY.length; i++) {
+        var size = BINARY[i][1];
+        if (value >= size) {
+          var scaled = value / size;
+          return (scaled < 10 ? decimal(scaled, 1) : Math.round(scaled)) + ' ' + BINARY[i][0];
+        }
+      }
+      return Math.round(value) + ' B';
+    };
+    return function (unit, value) {
+      if (value === null || value === undefined) return props.words.none;
+      if (unit === 'bytes') return bytes(value);
+      if (unit === 'rate') return bytes(value) + '/s';
+      if (unit === 'millicores') return Math.round(value) + 'm';
+      return String(value);
+    };
+  };
+
+  var stabilityTip = function (parent) {
+    var tip = document.createElement('div');
+    tip.className = 'st-tip';
+    tip.hidden = true;
+    parent.appendChild(tip);
+    return tip;
+  };
+
+  var row = function (tip, colour, label, value) {
+    var line = document.createElement('div');
+    line.className = 'st-tip-row';
+    var name = document.createElement('span');
+    name.className = 'st-tip-name';
+    var key = document.createElement('i');
+    key.className = colour;
+    name.appendChild(key);
+    name.appendChild(document.createTextNode(label));
+    var number = document.createElement('b');
+    number.textContent = value;
+    line.appendChild(name);
+    line.appendChild(number);
+    tip.appendChild(line);
+  };
+
+  var place = function (tip, x, width) {
+    if (x > width * 0.62) {
+      tip.style.left = '';
+      tip.style.right = width - x + 14 + 'px';
+    } else {
+      tip.style.right = '';
+      tip.style.left = x + 14 + 'px';
+    }
+  };
+
+  var two = function (n) {
+    return (n < 10 ? '0' : '') + n;
+  };
+  var clock = function (ms) {
+    var d = new Date(ms);
+    return two(d.getUTCHours()) + ':' + two(d.getUTCMinutes());
+  };
+
+  wabot.island('stability', function (host, props) {
+    props = props || {};
+    var undo = [];
+    var listen = function (node, type, handler) {
+      node.addEventListener(type, handler);
+      undo.push(function () {
+        node.removeEventListener(type, handler);
+      });
+    };
+    var format = stabilityFormat(props);
+
+    var strips = host.querySelector('.st-strips');
+    if (strips) {
+      var cellTip = stabilityTip(strips);
+      host.querySelectorAll('.st-cell[data-st-head]').forEach(function (cell) {
+        var title = cell.getAttribute('title');
+        cell.removeAttribute('title');
+        var show = function () {
+          cellTip.textContent = '';
+          var when = document.createElement('div');
+          when.className = 'st-tip-time';
+          when.textContent = cell.dataset.stDay;
+          var head = document.createElement('div');
+          head.className = 'st-tip-head';
+          var dot = document.createElement('i');
+          dot.className = 'st-dot ' + cell.className.replace('st-cell', '').replace('sel', '').trim();
+          head.appendChild(dot);
+          head.appendChild(document.createTextNode(cell.dataset.stHead));
+          var why = document.createElement('div');
+          why.textContent = cell.dataset.stWhy;
+          cellTip.appendChild(when);
+          cellTip.appendChild(head);
+          cellTip.appendChild(why);
+          var box = strips.getBoundingClientRect();
+          var at = cell.getBoundingClientRect();
+          cellTip.style.top = at.bottom - box.top + 6 + 'px';
+          place(cellTip, at.left - box.left + at.width / 2 - 14, box.width);
+          cellTip.hidden = false;
+        };
+        var hide = function () {
+          cellTip.hidden = true;
+        };
+        listen(cell, 'mouseenter', show);
+        listen(cell, 'focus', show);
+        listen(cell, 'mouseleave', hide);
+        listen(cell, 'blur', hide);
+        undo.push(function () {
+          if (title) cell.setAttribute('title', title);
+        });
+      });
+    }
+
+    var lane = host.querySelector('[data-st-lane]');
+    if (lane) {
+      var cards = lane.querySelectorAll('[data-st-card]');
+      var pinned = lane.querySelector('[data-st-pinned]');
+      lane.querySelectorAll('[data-st-group]').forEach(function (marker) {
+        var title = marker.getAttribute('title');
+        marker.removeAttribute('title');
+        var card = cards[Number(marker.dataset.stGroup)];
+        if (!card) return;
+        var show = function () {
+          cards.forEach(function (one) {
+            one.hidden = one !== card;
+          });
+        };
+        var hide = function () {
+          cards.forEach(function (one) {
+            one.hidden = one !== pinned;
+          });
+        };
+        listen(marker, 'mouseenter', show);
+        listen(marker, 'focus', show);
+        listen(marker, 'mouseleave', hide);
+        listen(marker, 'blur', hide);
+        undo.push(function () {
+          if (title) marker.setAttribute('title', title);
+        });
+      });
+    }
+
+    var charts = host.querySelector('[data-st-charts]');
+    if (charts && props.charts) {
+      var full = 86400000 / props.step;
+      var chartTip = stabilityTip(charts);
+      var lines = [];
+      host.querySelectorAll('[data-st-plot]').forEach(function (plot) {
+        var cross = document.createElement('div');
+        cross.className = 'st-cross';
+        cross.hidden = true;
+        plot.appendChild(cross);
+        lines.push(cross);
+        var dots = [];
+        var chart = props.charts[Number(plot.dataset.stPlot)];
+        if (!chart) return;
+        var clear = function () {
+          dots.forEach(function (dot) {
+            if (dot.parentNode) dot.parentNode.removeChild(dot);
+          });
+          dots = [];
+        };
+        var dot = function (x, y, colour) {
+          var mark = document.createElement('i');
+          mark.className = 'st-pt ' + colour;
+          mark.style.left = x + '%';
+          mark.style.top = y + '%';
+          plot.appendChild(mark);
+          dots.push(mark);
+        };
+        var move = function (event) {
+          var box = plot.getBoundingClientRect();
+          var fraction = Math.max(0, Math.min(0.9999, (event.clientX - box.left) / box.width));
+          var index = Math.floor(fraction * full);
+          if (index >= props.buckets) {
+            leave();
+            return;
+          }
+          var x = ((index + 0.5) / full) * 100;
+          lines.forEach(function (one) {
+            one.hidden = false;
+            one.style.left = x + '%';
+          });
+          clear();
+          chartTip.textContent = '';
+          var start = props.start + index * props.step;
+          var time = document.createElement('div');
+          time.className = 'st-tip-time mono';
+          time.textContent = clock(start) + '–' + clock(start + props.step);
+          chartTip.appendChild(time);
+          if (chart.kind === 'lines') {
+            var y = function (v) {
+              return 100 - (Math.min(v, chart.top) / chart.top) * 100;
+            };
+            chart.series.forEach(function (values, copy) {
+              var colour = 'c' + (copy < 4 ? copy + 1 : 0);
+              var value = values[index];
+              if (value !== null && value !== undefined) dot(x, y(value), colour);
+              row(chartTip, 'st-line ' + colour, props.copies[copy] || '', format(chart.unit, value));
+            });
+            var ceiling = chart.ceil && chart.ceil[index];
+            if (ceiling) row(chartTip, 'st-dash', props.words.ceiling, format(chart.unit, ceiling));
+          } else {
+            var up = chart.up[index];
+            var down = chart.down[index];
+            if (up !== null && up !== undefined) dot(x, 50 - (Math.min(up, chart.top) / chart.top) * 46, 'st-flow');
+            if (down !== null && down !== undefined) dot(x, 50 + (Math.min(down, chart.top) / chart.top) * 46, 'st-flow');
+            row(chartTip, 'st-line st-flow', chart.labels[0], format(chart.unit, up));
+            row(chartTip, 'st-line st-flow', chart.labels[1], format(chart.unit, down));
+          }
+          (props.events || []).forEach(function (one) {
+            var end = one.until || one.at;
+            if (one.at < start + props.step && end >= start) {
+              var said = document.createElement('div');
+              said.className = 'st-tip-ev';
+              said.textContent = clock(one.at) + ' ' + one.title;
+              chartTip.appendChild(said);
+            }
+          });
+          var outer = charts.getBoundingClientRect();
+          chartTip.style.top = box.top - outer.top + 'px';
+          place(chartTip, box.left - outer.left + (x / 100) * box.width, outer.width);
+          chartTip.hidden = false;
+        };
+        var leave = function () {
+          clear();
+          lines.forEach(function (one) {
+            one.hidden = true;
+          });
+          chartTip.hidden = true;
+        };
+        listen(plot, 'pointermove', move);
+        listen(plot, 'pointerleave', leave);
+        undo.push(clear);
+      });
+    }
+
+    return function () {
+      undo.forEach(function (done) {
+        done();
+      });
+      host.querySelectorAll('.st-tip, .st-cross').forEach(function (made) {
+        if (made.parentNode) made.parentNode.removeChild(made);
+      });
+    };
+  });
 })();

@@ -168,6 +168,18 @@ impl DeployHandler {
                     // `deploy` puts it there — so this only decides
                     // whether the job retries.
                     .map_err(|error| AsyncError::Handler(error.to_string()));
+                if outcome.is_ok() && service.origin_node_id.is_none() {
+                    use crate::domain::entities::service_event::EventKind;
+                    use crate::infra::repositories::service_events::{self, Happened};
+                    let _ = service_events::record(
+                        &self.database,
+                        Happened {
+                            detail: Some(&service.image),
+                            ..Happened::now(&service.id, EventKind::Deployed)
+                        },
+                    )
+                    .await;
+                }
 
                 // And whoever asked for this hears now.
                 //

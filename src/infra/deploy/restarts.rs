@@ -13,6 +13,7 @@ use crate::domain::policies::restarts::{wait_before, STABLE};
 pub struct Restarts {
     episodes: HashMap<String, Episode>,
     up_since: HashMap<String, Instant>,
+    oom_kills: Option<u64>,
 }
 
 struct Episode {
@@ -77,6 +78,17 @@ impl Restarts {
                 }
             }
         }
+    }
+
+    /// Whether the kernel killed anything for memory under the guard since
+    /// the last time this was asked: the only witness an OOM kill leaves,
+    /// because the container's own cgroup goes with the container.
+    pub fn killed_for_memory(&mut self, count: Option<u64>) -> bool {
+        let rose = matches!((self.oom_kills, count), (Some(before), Some(now)) if now > before);
+        if count.is_some() {
+            self.oom_kills = count;
+        }
+        rose
     }
 
     pub fn forget(&mut self, replica: &str) {

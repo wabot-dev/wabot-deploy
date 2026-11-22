@@ -1263,6 +1263,91 @@ pub async fn replica_log(
     }
 }
 
+/// What a copy of one of this node's services measured on the machine
+/// running it, by the same road and the same credential as its log.
+pub async fn replica_history(
+    database: &SqliteDatabase,
+    holder: &str,
+    project: &str,
+    service: &str,
+    slot: u32,
+    window: (i64, i64),
+) -> Result<api::History, String> {
+    let (node, secret) = holder_and_credential(database, holder).await?;
+    if !errand::keeps_history(node.version.as_deref()) {
+        return Err(format!("{} does not keep measurements yet", node.name));
+    }
+    let body = serde_json::to_string(&api::HistoryWanted {
+        project: project.to_string(),
+        service: service.to_string(),
+        slot,
+        from: window.0,
+        to: window.1,
+    })
+    .map_err(|error| error.to_string())?;
+    match call::ask_node(
+        &node,
+        "/api/network/replica-history",
+        Some(body),
+        Some(&secret),
+    )
+    .await
+    {
+        Ok((status, text)) if status.is_success() => {
+            serde_json::from_str(&text).map_err(|error| error.to_string())
+        }
+        Ok((_, text)) => Err(refusal_of(text)),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Bring this node's copy of a far copy's history up to now: what it
+/// measured since the last ten minutes kept here, a week at a time so
+/// each answer stays well under what one call may carry, and its events
+/// from a day before that, so a span that closed since is closed here too.
+pub async fn gather_history(
+    database: &SqliteDatabase,
+    holder: &str,
+    names: (&str, &str, u32),
+    container: &str,
+    service_id: &str,
+    window: (i64, i64),
+) -> Result<(), String> {
+    const WEEK: i64 = 7 * 86_400_000;
+    let (project, service, slot) = names;
+    let kept = crate::infra::repositories::copy_metrics::latest(database, container)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut from = kept
+        .map(|bucket| bucket + crate::domain::entities::copy_metric::BUCKET_MS)
+        .unwrap_or(window.0)
+        .max(window.0);
+    let events_from = from - 86_400_000;
+    while from < window.1 {
+        let to = (from + WEEK).min(window.1);
+        let history = replica_history(database, holder, project, service, slot, (from, to)).await?;
+        crate::infra::repositories::copy_metrics::write(database, history.metrics)
+            .await
+            .map_err(|error| error.to_string())?;
+        if to == window.1 {
+            break;
+        }
+        from = to;
+    }
+    let history = replica_history(
+        database,
+        holder,
+        project,
+        service,
+        slot,
+        (events_from, window.1),
+    )
+    .await?;
+    crate::infra::repositories::service_events::keep(database, service_id, history.events)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Whether the node holding a copy follows its log for this one.
 pub async fn follows_logs(database: &SqliteDatabase, holder: &str) -> bool {
     match find(database, holder).await {

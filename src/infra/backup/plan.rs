@@ -338,6 +338,9 @@ pub async fn take_now(config: &Config, database: &SqliteDatabase) -> Result<Stri
     if let Err(error) = record(database, at, &outcome).await {
         tracing::warn!(%error, "could not record how the backup went");
     }
+    if let Err(reason) = &outcome {
+        crate::infra::backup::remember_failed_run(database, at, reason).await;
+    }
     outcome
 }
 
