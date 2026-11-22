@@ -106,7 +106,7 @@ fn row(page: &PasskeysPage<'_>, passkey: &Passkey, last: bool) -> String {
     };
     rsx! {
         <div class="item">
-            <span class="tile">
+            <span class="glyph">
                 @if initials.is_empty() {
                     (hypertext::Raw::dangerously_create(KEY))
                 } @else {
@@ -227,7 +227,7 @@ pub fn render<'a>(page: &'a PasskeysPage<'a>) -> impl Renderable + 'a {
         }
         @if empty {
             <section class="hero">
-                <span class="tile tile-brand">(hypertext::Raw::dangerously_create(PASSKEY))</span>
+                <span class="glyph glyph-brand">(hypertext::Raw::dangerously_create(PASSKEY))</span>
                 <div class="stack-sm">
                     <h2>(t("Sign in without a password"))</h2>
                     <p class="item-meta">(t("Your device makes a passkey with your fingerprint, face or screen lock."))</p>

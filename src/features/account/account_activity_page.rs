@@ -43,7 +43,7 @@ pub fn render<'a>(page: &'a ActivityPage<'a>) -> impl Renderable + 'a {
             <div class="items">
                 @for event in page.events {
                     <div class=(match event.unread { true => "item unread", false => "item" })>
-                        <span class="tile">(hypertext::Raw::dangerously_create(icon(event)))</span>
+                        <span class="glyph">(hypertext::Raw::dangerously_create(icon(event)))</span>
                         <div>
                             <p class="item-name">
                                 (t(event.kind.label()))

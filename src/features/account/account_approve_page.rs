@@ -48,7 +48,7 @@ pub fn render<'a>(page: &'a ApprovePage<'a>) -> impl Renderable + 'a {
         @if let Some(request) = page.request {
             <div class="items">
                 <div class="item">
-                    <span class="tile">
+                    <span class="glyph">
                         @if phone(&request.name) {
                             (hypertext::Raw::dangerously_create(ICON_PHONE))
                         } @else {

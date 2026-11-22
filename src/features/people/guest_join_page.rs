@@ -22,7 +22,7 @@ pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
         ..Default::default()
     };
     let form = rsx! {
-        <form method="post" action=(format!("/join/{}", page.token)) class="card stack"
+        <form method="post" action=(format!("/join/{}", page.token)) class="stack"
               data-wabot-reload>
             <label for="username">(t("Username"))</label>
             <input id="username" name="username" type="text"
@@ -31,31 +31,27 @@ pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
                 <p class="field-hint">(t("Your device makes a passkey: a fingerprint, a face or a PIN, and nothing to remember."))</p>
             }
             (prompt.fields())
-            <div class="actions">
-                <button type="submit">(t("Create account"))</button>
-            </div>
+            <button type="submit" class="block">(t("Create account"))</button>
         </form>
     }
     .render()
     .into_inner();
     rsx! {
         (layout::style_tag())
-        <main class="shell narrow">
+        <main class="shell narrow guest">
             (mark(page.heading))
             @if let Some(message) = &page.error {
                 (layout::error_note(message))
             }
             @if let Some(invitation) = &page.invitation {
-                <p class="tagline">
+                <p class="guest-host">
                     (t("You were invited as "))(invitation.node_role.label().to_lowercase())(".")
                 </p>
                 (prompt.around(form.clone()))
             } @else {
-                <section class="card stack">
-                    <p>(t("This invitation is not valid. It may have been used already, \
-                         withdrawn, or expired — they last seven days."))</p>
-                    <p class="field-hint">(t("Ask whoever invited you for another."))</p>
-                </section>
+                <p>(t("This invitation is not valid. It may have been used already, \
+                     withdrawn, or expired — they last seven days."))</p>
+                <p class="field-hint">(t("Ask whoever invited you for another."))</p>
             }
         </main>
     }

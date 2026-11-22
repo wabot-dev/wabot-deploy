@@ -328,12 +328,15 @@ rule 8 defines, anything this console invented — stays in
 `src/shell/layouts/layout.rs`. The split is the thing, not the file's
 provenance.
 
-Two tests read the stylesheet directly rather than a copy of it:
+Three tests read the stylesheet directly rather than a copy of it:
 `the_two_dark_palettes_agree`, because dark is written twice and CSS
-cannot make a media query set an attribute, and
+cannot make a media query set an attribute;
 `a_classed_submit_is_not_the_primary_button`, because
 `button[type='submit']` outranks every `.btn-*` variant and takes them
-all with it.
+all with it; and `no_class_has_a_property_set_by_two_of_its_rules`,
+because every class is global and a new one under a name already taken
+restyles pages nobody was looking at — v0.46.1's `.tile` for a passkey
+collapsed the cards of Projects, Organisations and Nodes.
 
 **And anything visual has to be looked at by somebody.** Without a
 session the console answers 302, so four UI faults in one afternoon — a

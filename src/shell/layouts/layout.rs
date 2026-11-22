@@ -418,7 +418,7 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
 .item-meta { margin: 0; font-size: var(--fs-sm); color: rgb(var(--c-fg-muted)); overflow-wrap: anywhere; }
 .item-actions { display: flex; align-items: center; gap: var(--sp-1); }
 .item-actions form { margin: 0; }
-.tile {
+.glyph {
   width: 2.25rem;
   height: 2.25rem;
   border-radius: var(--r-md);
@@ -430,8 +430,8 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
   font-weight: 600;
   letter-spacing: -0.02em;
 }
-.tile svg { width: 1.2rem; height: 1.2rem; }
-.tile-brand { background: rgb(var(--c-brand) / 0.15); color: rgb(var(--c-brand-ink)); }
+.glyph svg { width: 1.2rem; height: 1.2rem; }
+.glyph-brand { background: rgb(var(--c-brand) / 0.15); color: rgb(var(--c-brand-ink)); }
 .hero {
   background: rgb(var(--c-bg-raised));
   border-radius: var(--r-lg);
@@ -441,7 +441,7 @@ button[data-wabot-state="failed"]:not(.btn-icon)::after {
   gap: var(--sp-4);
   align-items: start;
 }
-.hero .tile { width: 2.75rem; height: 2.75rem; }
+.hero .glyph { width: 2.75rem; height: 2.75rem; }
 .hero h2 { margin: 0; font-size: var(--fs-lg); }
 .hero form { margin-top: var(--sp-3); }
 .warning-bar {
@@ -1780,6 +1780,109 @@ mod tests {
         assert!(
             loose.is_empty(),
             "these get a full-width button under them instead of beside them: {loose:#?}"
+        );
+    }
+
+    /// Every stylesheet the console paints with, as a browser receives it.
+    fn painted() -> String {
+        use hypertext::Renderable;
+        let page = super::style_tag()
+            .render()
+            .into_inner()
+            .replace("<style>", "")
+            .replace("</style>", "\n");
+        format!("{}\n{page}", include_str!("../../../assets/wabot.css"))
+    }
+
+    /// The rules at the top level whose selector is one class and nothing
+    /// else, as (class, its declarations' property names).
+    fn bare_rules(sheet: &str) -> Vec<(String, Vec<String>)> {
+        let mut plain = String::new();
+        let mut rest = sheet;
+        while let Some(start) = rest.find("/*") {
+            plain.push_str(&rest[..start]);
+            rest = rest[start..]
+                .find("*/")
+                .map_or("", |end| &rest[start + end + 2..]);
+        }
+        plain.push_str(rest);
+
+        let mut rules = Vec::new();
+        let mut depth = 0usize;
+        let mut selector = String::new();
+        let mut body = String::new();
+        for c in plain.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    if depth == 1 {
+                        body.clear();
+                    }
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let name = selector.trim();
+                        let bare = name.strip_prefix('.').is_some_and(|class| {
+                            !class.is_empty()
+                                && class
+                                    .chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        });
+                        if bare {
+                            let properties = body
+                                .split(';')
+                                .filter_map(|declaration| declaration.split_once(':'))
+                                .map(|(property, _)| property.trim().to_string())
+                                .filter(|property| !property.is_empty())
+                                .collect();
+                            rules.push((name.to_string(), properties));
+                        }
+                        selector.clear();
+                    }
+                }
+                _ if depth == 0 => selector.push(c),
+                _ if depth == 1 => body.push(c),
+                _ => {}
+            }
+        }
+        rules
+    }
+
+    /// **A class name already taken is not caught by anything else.**
+    /// v0.46.1 gave the passkeys' small square `.tile`, which was already
+    /// the card of Projects, Organisations and Nodes; the later rule's
+    /// `display` and `width` won, and those pages' cards collapsed into
+    /// two-rem squares with their text spilling out. Every test passed,
+    /// and Jorge found it on a real node.
+    ///
+    /// Two rules for one class are fine when they say different things —
+    /// `.app-shell` has three, its canvas, its chart colours and its
+    /// height. One property set twice is the later rule silently undoing
+    /// the earlier one, which is what a reused name does.
+    #[test]
+    fn no_class_has_a_property_set_by_two_of_its_rules() {
+        let rules = bare_rules(&painted());
+        assert!(
+            rules.iter().any(|(class, _)| class == ".app-shell"),
+            "the stylesheets were not read: {} bare rules",
+            rules.len()
+        );
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        let mut twice = Vec::new();
+        for (class, properties) in &rules {
+            for property in properties {
+                let pair = (class.as_str(), property.as_str());
+                if seen.contains(&pair) {
+                    twice.push(format!("{class} {{ {property} }}"));
+                } else {
+                    seen.push(pair);
+                }
+            }
+        }
+        assert!(
+            twice.is_empty(),
+            "set by two rules of the same class, so one undoes the other: {twice:#?}"
         );
     }
 }

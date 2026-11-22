@@ -56,7 +56,7 @@ pub fn render<'a>(page: &'a DevicesPage<'a>) -> impl Renderable + 'a {
             <div class="items">
                 @for device in page.devices {
                     <div class="item">
-                        <span class="tile">
+                        <span class="glyph">
                             @if phone(&device.name) {
                                 (hypertext::Raw::dangerously_create(ICON_PHONE))
                             } @else {

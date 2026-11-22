@@ -169,7 +169,7 @@ impl AccountControl {
             </button>
             <div id="account-panel" popover class="account-panel">
                 <div class="account-asking">
-                    <span class="tile">(hypertext::Raw::dangerously_create(icon))</span>
+                    <span class="glyph">(hypertext::Raw::dangerously_create(icon))</span>
                     <div>
                         <p class="account-panel-name">(sentences::device(&request.name))</p>
                         <p class="account-panel-meta">
