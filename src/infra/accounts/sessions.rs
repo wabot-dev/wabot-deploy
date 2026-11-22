@@ -45,7 +45,8 @@ pub async fn start(
     let token = wabot::prelude::password::generate(48);
     let (hash, id) = (sha256_hex(&token), account.id.clone());
     let device = device_id.map(str::to_string);
-    let expires_at = now_ms()
+    let now = now_ms();
+    let expires_at = now
         + match device {
             Some(_) => SESSION_DAYS * 86_400_000,
             None => UNTRUSTED_HOURS * 3_600_000,
@@ -55,12 +56,12 @@ pub async fn start(
         .write(move |connection| {
             // Expired rows are swept here rather than on a timer: this
             // is the only place that adds one.
-            connection.execute("DELETE FROM session WHERE \"expires_at\" < ?1", [now_ms()])?;
+            connection.execute("DELETE FROM session WHERE \"expires_at\" < ?1", [now])?;
             connection.execute(
                 "INSERT INTO session (\"token_hash\", \"account_id\", \"created_at\", \"expires_at\", \
                                       \"device_id\", \"verified_at\") \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?3)",
-                (hash, id, now_ms(), expires_at, device),
+                (hash, id, now, expires_at, device),
             )?;
             Ok(())
         })
@@ -390,6 +391,10 @@ mod tests {
     /// A session on a device nobody trusted is one a browser forgets when
     /// it closes, and the row ends twelve hours on whatever the browser
     /// does.
+    ///
+    /// It failed once in the v0.46.2 release run, a millisecond short:
+    /// `start` read the clock for the expiry and again for the row, and a
+    /// tick between them shortened every session by it.
     #[tokio::test]
     async fn only_a_trusted_device_keeps_a_session_past_the_browser() {
         assert!(set_cookie("t", true).contains("Max-Age="));
