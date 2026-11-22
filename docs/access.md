@@ -279,7 +279,8 @@ fetches nothing the page did not have.
 ## Where it stands
 
 All five phases are written, on the branch `access-passkeys`
-(2026-11-21), with the gate green. **None of it has run on a node or been
+(2026-11-21), with the gate green against `wabot-feature-rest-controller`
+0.2.5 and `wabot-addon-auth-passkey` 0.2.0 as published (2026-11-22). **None of it has run on a node or been
 seen in a browser.**
 
 - Five tests walk the ceremonies over HTTP with the addon's software
@@ -303,8 +304,6 @@ seen in a browser.**
 
 Before it ships:
 
-- `wabot-feature-rest-controller` 0.2.5 and `wabot-addon-auth-passkey`
-  0.2.0 published, and `[patch.crates-io]` taken out of `Cargo.toml`.
 - On the VM with its CA trusted, and by Jorge in the browsers listed
   under "Verifying it". The QR on "Add a device" and the island's error
   line have not been looked at.

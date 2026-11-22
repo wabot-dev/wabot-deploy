@@ -506,10 +506,9 @@ happened:
 
 - Passkeys, trusted devices, approval from one, links and Activity
   (`docs/access.md`) are written on the branch `access-passkeys` and have
-  run nowhere but the tests. Before they ship: publish
-  `wabot-feature-rest-controller` 0.2.5 and `wabot-addon-auth-passkey`
-  0.2.0, take `[patch.crates-io]` out of `Cargo.toml`, walk them on the
-  VM with its CA trusted, and Jorge looks in each browser. The release
+  run nowhere but the tests. The crates they need are published. Before
+  they ship: walk them on the VM with its CA trusted, and Jorge looks in
+  each browser. The release
   signs everybody out once and deletes a password with its account's
   first passkey — its notes have to say both.
 - Reconcile checks whether a container runs, not whether its port

@@ -286,8 +286,3 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 codegen-units = 4
-
-[patch.crates-io]
-wabot-core = { path = "../../framework/wabot-rust/crates/wabot-core" }
-wabot-feature-rest-controller = { path = "../../framework/wabot-rust/crates/wabot-feature-rest-controller" }
-wabot-addon-auth-passkey = { path = "../../framework/wabot-rust/crates/wabot-addon-auth-passkey" }
