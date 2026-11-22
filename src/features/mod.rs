@@ -1,4 +1,5 @@
 pub mod access;
+pub mod account;
 pub mod backups;
 pub mod buckets;
 pub mod databases;

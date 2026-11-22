@@ -5,12 +5,15 @@
 //! is what separates it from an entity — an entity has an identity and a
 //! life, a value object is just a value that could not be wrong.
 
+pub mod account_event;
 pub mod allowlist;
+pub mod browser;
 pub mod bucket_name;
 pub mod capability;
 pub mod command_line;
 pub mod cors_origin;
 pub mod destinations;
+pub mod device_name;
 pub mod hostname;
 pub mod image_reference;
 pub mod language;

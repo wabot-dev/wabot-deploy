@@ -103,22 +103,7 @@ impl ConsoleState {
     /// one, which is a thing the page says rather than something this
     /// can fix.
     pub(crate) async fn base_url_for(&self, tenant_id: Option<&str>) -> String {
-        let theirs = match tenant_id {
-            Some(id) => crate::infra::repositories::tenants::find(&self.database, id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|tenant| tenant.domain),
-            None => None,
-        };
-        let domain = match theirs {
-            Some(domain) => Some(domain),
-            None => crate::infra::node::settings::domain(&self.database).await,
-        };
-        format!(
-            "https://{}",
-            crate::infra::node::authority(domain.as_deref(), self.config.edge.https_port)
-        )
+        crate::infra::node::base_url(&self.database, self.config.edge.https_port, tenant_id).await
     }
 
     pub fn new(

@@ -7,7 +7,7 @@
 pub(crate) const TABLE: &[(&str, &str)] = &[
     (" person/people", " persona(s)"),
     (" project(s)", " proyecto(s)"),
-    ("A link that works once and expires in seven days. Whoever takes it chooses their own username and password, and administers this organisation.", "Un enlace que sirve una vez y caduca en siete días. Quien lo tome elige su propio usuario y contraseña, y administra esta organización."),
+    ("A link that works once and expires in seven days. Whoever takes it chooses their own username, makes a passkey, and administers this organisation.", "Un enlace que funciona una vez y caduca en siete días. Quien lo tome elige su propio usuario, crea una llave de acceso y administra esta organización."),
     ("An organisation has its own projects, its own people and its own console. What stays this node's is the machine underneath it.", "Una organización tiene sus propios proyectos, su propia gente y su propia consola. Lo que sigue siendo de este nodo es la máquina de debajo."),
     ("Answers for it", "Responde por ella"),
     ("Console", "Consola"),

@@ -22,7 +22,14 @@
 //! costs microseconds — and on a box that deploys containers, "log
 //! that session out now" is worth more than saving a local read.
 
+pub mod ceremonies;
+pub mod challenges;
+pub mod devices;
+pub mod events;
 pub mod invitations;
+pub mod links;
+pub mod passkeys;
+pub mod requests;
 pub mod sessions;
 
 use crate::domain::entities::account::Account;
@@ -149,7 +156,7 @@ pub async fn create_admin(
     database: &SqliteDatabase,
     setup_token: &str,
     username: &str,
-    password: &str,
+    id: Option<&str>,
 ) -> AccountResult<Account> {
     if any_account(database).await? {
         return Err(AccountError::Refused(
@@ -159,9 +166,8 @@ pub async fn create_admin(
 
     let username = username.trim();
     validate_username(username)?;
-    validate_password(password)?;
 
-    // Checked *after* validation so a bad password does not spend the
+    // Checked *after* validation so a bad name does not spend the
     // token, and *before* the insert so a failed insert does not leave
     // it spent.
     spend_setup_token(database, setup_token).await?;
@@ -171,7 +177,7 @@ pub async fn create_admin(
     let account = insert(
         database,
         username,
-        password,
+        id,
         crate::domain::values::roles::NodeRole::Admin,
         None,
     )
@@ -193,30 +199,37 @@ pub async fn create_admin(
 pub async fn create_in(
     database: &SqliteDatabase,
     username: &str,
-    password: &str,
+    id: Option<&str>,
     role: crate::domain::values::roles::NodeRole,
     tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let username = username.trim();
     validate_username(username)?;
-    validate_password(password)?;
 
-    let account = insert(database, username, password, role, tenant_id).await?;
+    let account = insert(database, username, id, role, tenant_id).await?;
     tracing::info!(username = %account.username, role = role.as_str(), "account created");
     Ok(account)
 }
 
+/// An account's id, minted before the account exists when a passkey has
+/// to be made for it first: the id is the passkey's user handle.
+pub fn new_id() -> String {
+    format!("acc-{}", wabot::prelude::password::generate(16))
+}
+
+/// No password, ever: a new account signs in with a passkey or a link.
+/// The empty string is what no hash verifies against.
 async fn insert(
     database: &SqliteDatabase,
     username: &str,
-    password: &str,
+    id: Option<&str>,
     role: crate::domain::values::roles::NodeRole,
     tenant_id: Option<&str>,
 ) -> AccountResult<Account> {
     let account = Account {
         theme: crate::domain::values::theme::Theme::System,
         language: crate::domain::values::language::Language::En,
-        id: format!("acc-{}", wabot::prelude::password::generate(16)),
+        id: id.map(str::to_string).unwrap_or_else(new_id),
         username: username.to_string(),
         // Whose frontier they are in. It arrives on the invitation and
         // is settled when the link was minted, never by whoever opens
@@ -224,8 +237,7 @@ async fn insert(
         tenant_id: tenant_id.map(str::to_string),
         role,
     };
-    let hash = wabot::prelude::password::hash(password)
-        .map_err(|error| AccountError::Hash(error.to_string()))?;
+    let hash = String::new();
 
     let (id, name) = (account.id.clone(), account.username.clone());
     let scope = account.tenant_id.clone();
@@ -380,6 +392,117 @@ fn decode(row: &wabot::sqlite::rusqlite::Row<'_>) -> wabot::sqlite::rusqlite::Re
     })
 }
 
+/// One account, by its id.
+pub async fn find(database: &SqliteDatabase, id: &str) -> AccountResult<Option<Account>> {
+    let id = id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \"tenant_id\" \
+                     FROM account WHERE \"id\" = ?1",
+                    [id],
+                    decode,
+                )
+                .optional()
+        })
+        .await?)
+}
+
+/// One account, by its name within a scope — matched as signing in
+/// matches it, without minding case.
+#[cfg(test)]
+pub async fn by_username(
+    database: &SqliteDatabase,
+    username: &str,
+    tenant_id: Option<&str>,
+) -> AccountResult<Option<Account>> {
+    let (name, scope) = (
+        username.trim().to_lowercase(),
+        tenant_id.unwrap_or_default().to_string(),
+    );
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \"tenant_id\" \
+                     FROM account \
+                     WHERE lower(\"username\") = ?1 AND COALESCE(\"tenant_id\", '') = ?2",
+                    (name, scope),
+                    decode,
+                )
+                .optional()
+        })
+        .await?)
+}
+
+/// Every account called this, in whichever scope: what the terminal is
+/// given, where there is no `Host` to say which.
+pub async fn named(database: &SqliteDatabase, username: &str) -> AccountResult<Vec<Account>> {
+    let name = username.trim().to_lowercase();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .prepare(
+                    "SELECT \"id\", \"username\", \"role\", \"theme\", \"language\", \"tenant_id\" \
+                     FROM account WHERE lower(\"username\") = ?1 ORDER BY \"tenant_id\" IS NOT NULL",
+                )?
+                .query_map([name], decode)?
+                .collect()
+        })
+        .await?)
+}
+
+/// Whether an account still signs in with a password.
+pub async fn has_password(database: &SqliteDatabase, id: &str) -> AccountResult<bool> {
+    let id = id.to_string();
+    Ok(database
+        .read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT \"password_hash\" <> '' FROM account WHERE \"id\" = ?1",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .optional()
+        })
+        .await?
+        .unwrap_or(false))
+}
+
+/// Whether anybody in a scope still signs in with a password, which is
+/// whether the sign-in page offers the form for one.
+pub async fn any_password_in(
+    database: &SqliteDatabase,
+    tenant_id: Option<&str>,
+) -> AccountResult<bool> {
+    let scope = tenant_id.unwrap_or_default().to_string();
+    Ok(database
+        .read(move |connection| {
+            connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM account \
+                 WHERE \"password_hash\" <> '' AND COALESCE(\"tenant_id\", '') = ?1)",
+                [scope],
+                |row| row.get::<_, bool>(0),
+            )
+        })
+        .await?)
+}
+
+/// Forget an account's password. True when there was one.
+pub async fn clear_password(database: &SqliteDatabase, id: &str) -> AccountResult<bool> {
+    let id = id.to_string();
+    Ok(database
+        .write(move |connection| {
+            Ok(connection.execute(
+                "UPDATE account SET \"password_hash\" = '' \
+                 WHERE \"id\" = ?1 AND \"password_hash\" <> ''",
+                [id],
+            )? > 0)
+        })
+        .await?)
+}
+
 /// Store which theme somebody reads in.
 pub async fn set_theme(
     database: &SqliteDatabase,
@@ -422,56 +545,6 @@ pub async fn set_language(
 ///
 /// `None` for both "no such user" and "wrong password", deliberately:
 /// telling them apart tells an attacker which usernames exist.
-/// Replace an account's password with a freshly generated one.
-///
-/// **Generated rather than taken as an argument**, and the difference is
-/// not politeness: a password on a command line lands in shell history, in
-/// the process table while it runs, and in whatever the terminal scrolled
-/// past. This one is printed once and stored as a hash like every other.
-///
-/// Matched case-insensitively, the way signing in matches it — an operator
-/// recovering an account should not have to remember how they capitalised
-/// it.
-pub async fn reset_password(
-    database: &SqliteDatabase,
-    username: &str,
-) -> AccountResult<(String, String)> {
-    let lookup = username.trim().to_lowercase();
-    // Long enough that it is not worth attacking, and made of the same
-    // alphabet as every other secret this node prints so it survives being
-    // copied out of a terminal.
-    let password = wabot::prelude::password::generate(24);
-    let hash = wabot::prelude::password::hash(&password)
-        .map_err(|error| AccountError::Hash(error.to_string()))?;
-
-    let (found, stored) = (lookup.clone(), hash);
-    let name: Option<String> = database
-        .write(move |connection| {
-            let name: Option<String> = connection
-                .query_row(
-                    "SELECT \"username\" FROM account WHERE lower(\"username\") = ?1",
-                    [&found],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if name.is_some() {
-                connection.execute(
-                    "UPDATE account SET \"password_hash\" = ?2 WHERE lower(\"username\") = ?1",
-                    (&found, &stored),
-                )?;
-            }
-            Ok(name)
-        })
-        .await?;
-
-    match name {
-        Some(name) => Ok((name, password)),
-        None => Err(AccountError::Refused(format!(
-            "no account here is called {username}"
-        ))),
-    }
-}
-
 pub async fn authenticate(
     database: &SqliteDatabase,
     username: &str,
@@ -527,6 +600,10 @@ pub async fn authenticate(
         return Ok(None);
     };
 
+    if hash.is_empty() {
+        let _ = wabot::prelude::password::verify(password, DUMMY_HASH);
+        return Ok(None);
+    }
     if !wabot::prelude::password::verify(password, &hash) {
         return Ok(None);
     }
@@ -570,25 +647,6 @@ fn validate_username(username: &str) -> AccountResult<()> {
         return Err(AccountError::Refused(
             "a username holds letters, digits, and - _ .".into(),
         ));
-    }
-    Ok(())
-}
-
-/// Length, and nothing else.
-///
-/// No character-class rules: they push people towards `Password1!`,
-/// which is worse than a long phrase. Twelve is the floor because this
-/// console can start containers on the machine.
-fn validate_password(password: &str) -> AccountResult<()> {
-    if password.chars().count() < 12 {
-        return Err(AccountError::Refused(
-            "a password needs at least 12 characters — a phrase is easier to remember \
-             and harder to guess than a short one with punctuation in it"
-                .into(),
-        ));
-    }
-    if password.chars().count() > 200 {
-        return Err(AccountError::Refused("that password is too long".into()));
     }
     Ok(())
 }
@@ -660,6 +718,24 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
+/// A password from before passkeys, as an account that had one still
+/// holds it: nothing in the console writes one any more.
+#[cfg(test)]
+pub(crate) async fn legacy_password(database: &SqliteDatabase, id: &str, password: &str) {
+    let hash = wabot::prelude::password::hash(password).expect("hashed");
+    let id = id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE account SET \"password_hash\" = ?2 WHERE \"id\" = ?1",
+                (id, hash),
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("stored");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,7 +773,7 @@ mod tests {
             create_in(
                 &database,
                 "jorge",
-                "a long passphrase here",
+                None,
                 crate::domain::values::roles::NodeRole::Member,
                 scope,
             )
@@ -709,7 +785,7 @@ mod tests {
         let refused = create_in(
             &database,
             "jorge",
-            "another long passphrase",
+            None,
             crate::domain::values::roles::NodeRole::Member,
             Some(&acme.id),
         )
@@ -722,7 +798,7 @@ mod tests {
         let refused = create_in(
             &database,
             "jorge",
-            "another long passphrase",
+            None,
             crate::domain::values::roles::NodeRole::Member,
             None,
         )
@@ -747,7 +823,7 @@ mod tests {
         let node_side = create_in(
             &database,
             "jorge",
-            "the node one here",
+            None,
             crate::domain::values::roles::NodeRole::Admin,
             None,
         )
@@ -756,13 +832,15 @@ mod tests {
         let tenant_side = create_in(
             &database,
             "jorge",
-            "the organisation one",
+            None,
             crate::domain::values::roles::NodeRole::Admin,
             Some(&acme.id),
         )
         .await
         .expect("theirs");
         assert_ne!(node_side.id, tenant_side.id);
+        legacy_password(&database, &node_side.id, "the node one here").await;
+        legacy_password(&database, &tenant_side.id, "the organisation one").await;
 
         let found = authenticate(&database, "jorge", "the node one here", None)
             .await
@@ -798,59 +876,11 @@ mod tests {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
 
-        let account = create_admin(&database, &token, "jorge", "correct horse battery")
+        let account = create_admin(&database, &token, "jorge", None)
             .await
             .expect("created");
         assert_eq!(account.username, "jorge");
         assert!(any_account(&database).await.expect("query"));
-    }
-
-    /// The way back into a node whose only administrator forgot their
-    /// password — which, until this existed, was a reinstall.
-    ///
-    /// The old password stops working in the same breath, because the
-    /// point is recovery and not a second key: an account with two
-    /// passwords is one whose owner cannot tell whether the one they had
-    /// was stolen.
-    #[tokio::test]
-    async fn a_forgotten_password_can_be_replaced_and_the_old_one_stops() {
-        let database = database().await;
-        let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "Jorge", "correct horse battery")
-            .await
-            .expect("created");
-
-        // Matched the way signing in matches it: an operator recovering an
-        // account should not have to remember how they capitalised it.
-        let (name, password) = reset_password(&database, "jorge").await.expect("reset");
-        assert_eq!(name, "Jorge", "and the answer says whose it was");
-
-        assert!(authenticate(&database, "jorge", &password, None)
-            .await
-            .expect("query")
-            .is_some());
-        assert!(
-            authenticate(&database, "jorge", "correct horse battery", None)
-                .await
-                .expect("query")
-                .is_none(),
-            "the password they lost is not still a way in"
-        );
-    }
-
-    /// A name nobody has is refused rather than quietly creating one: the
-    /// setup token is the only thing that mints an account, and a typo
-    /// here must not become a second administrator.
-    #[tokio::test]
-    async fn resetting_a_name_that_is_not_here_makes_nobody() {
-        let database = database().await;
-        let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "jorge", "correct horse battery")
-            .await
-            .expect("created");
-
-        assert!(reset_password(&database, "someone-else").await.is_err());
-        assert_eq!(all(&database).await.expect("query").len(), 1);
     }
 
     /// The whole reason the token exists. Without it, whoever reaches
@@ -860,14 +890,9 @@ mod tests {
         let database = database().await;
         issue_setup_token(&database).await.expect("token");
 
-        let error = create_admin(
-            &database,
-            "not-the-token",
-            "mallory",
-            "a long enough password",
-        )
-        .await
-        .expect_err("refused");
+        let error = create_admin(&database, "not-the-token", "mallory", None)
+            .await
+            .expect_err("refused");
         assert!(error.to_string().contains("setup token"), "{error}");
         assert!(!any_account(&database).await.expect("query"));
     }
@@ -878,7 +903,7 @@ mod tests {
     async fn the_token_is_spent_on_use() {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "jorge", "correct horse battery")
+        create_admin(&database, &token, "jorge", None)
             .await
             .expect("created");
 
@@ -891,12 +916,12 @@ mod tests {
     async fn only_the_first_account_is_created_this_way() {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "jorge", "correct horse battery")
+        create_admin(&database, &token, "jorge", None)
             .await
             .expect("created");
 
         let second = issue_setup_token(&database).await.expect("token");
-        let error = create_admin(&database, &second, "mallory", "another long password")
+        let error = create_admin(&database, &second, "mallory", None)
             .await
             .expect_err("refused");
         assert!(
@@ -905,20 +930,18 @@ mod tests {
         );
     }
 
-    /// A rejected password must not cost the token — otherwise a typo
-    /// means re-running install.
+    /// A rejected name must not cost the token — otherwise a typo means
+    /// re-running install.
     #[tokio::test]
-    async fn a_bad_password_does_not_spend_the_token() {
+    async fn a_bad_username_does_not_spend_the_token() {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
 
-        assert!(create_admin(&database, &token, "jorge", "short")
-            .await
-            .is_err());
+        assert!(create_admin(&database, &token, "j", None).await.is_err());
         assert!(setup_token_valid(&database).await.expect("query"));
 
         // And the same token still works.
-        create_admin(&database, &token, "jorge", "correct horse battery")
+        create_admin(&database, &token, "jorge", None)
             .await
             .expect("created on the second try");
     }
@@ -931,7 +954,7 @@ mod tests {
             .await
             .expect("expire it");
 
-        let error = create_admin(&database, &token, "jorge", "correct horse battery")
+        let error = create_admin(&database, &token, "jorge", None)
             .await
             .expect_err("refused");
         assert!(error.to_string().contains("expired"), "{error}");
@@ -941,9 +964,10 @@ mod tests {
     async fn the_right_password_signs_in_and_the_wrong_one_does_not() {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "Jorge", "correct horse battery")
+        let account = create_admin(&database, &token, "Jorge", None)
             .await
             .expect("created");
+        legacy_password(&database, &account.id, "correct horse battery").await;
 
         assert!(
             authenticate(&database, "Jorge", "correct horse battery", None)
@@ -970,27 +994,34 @@ mod tests {
         );
     }
 
-    /// The password is never stored, and the hash is argon2id rather
-    /// than something faster.
+    /// Nothing makes a password any more, and the empty string an account
+    /// without one holds is not a way in either.
     #[tokio::test]
-    async fn the_password_is_not_in_the_database() {
+    async fn a_new_account_has_no_password_to_sign_in_with() {
         let database = database().await;
         let token = issue_setup_token(&database).await.expect("token");
-        create_admin(&database, &token, "jorge", "correct horse battery")
+        let account = create_admin(&database, &token, "jorge", None)
             .await
             .expect("created");
 
-        let stored: String = database
-            .read(|connection| {
-                connection.query_row("SELECT \"password_hash\" FROM account", [], |row| {
-                    row.get(0)
-                })
-            })
+        assert!(!has_password(&database, &account.id).await.expect("read"));
+        assert!(!any_password_in(&database, None).await.expect("read"));
+        assert!(authenticate(&database, "jorge", "", None)
             .await
-            .expect("query");
+            .expect("query")
+            .is_none());
 
-        assert!(!stored.contains("correct horse battery"));
-        assert!(stored.starts_with("$argon2id$"), "{stored}");
+        legacy_password(&database, &account.id, "correct horse battery").await;
+        assert!(any_password_in(&database, None).await.expect("read"));
+        assert!(clear_password(&database, &account.id)
+            .await
+            .expect("cleared"));
+        assert!(
+            authenticate(&database, "jorge", "correct horse battery", None)
+                .await
+                .expect("query")
+                .is_none()
+        );
     }
 
     /// Nor is the setup token: a database someone reads must not be a
@@ -1006,17 +1037,6 @@ mod tests {
             .expect("present");
         assert_ne!(stored, token);
         assert_eq!(stored, sha256_hex(&token));
-    }
-
-    #[test]
-    fn passwords_are_judged_on_length_alone() {
-        assert!(validate_password("correct horse battery").is_ok());
-        assert!(validate_password("aaaaaaaaaaaa").is_ok(), "12 is the floor");
-        assert!(
-            validate_password("Sh0rt!").is_err(),
-            "punctuation is not length"
-        );
-        assert!(validate_password(&"x".repeat(500)).is_err());
     }
 
     #[test]

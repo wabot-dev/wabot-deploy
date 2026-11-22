@@ -29,11 +29,13 @@ pub mod revealed_page;
 use std::sync::Arc;
 
 use wabot::prelude::*;
+use wabot::rest::axum::middleware::from_fn;
 use wabot::rest::axum::Router;
 use wabot::sqlite::SqliteDatabase;
 use wabot::ui::embedded_assets;
 
 use crate::features::access::{auth_rest_controller, auth_ui_controller};
+use crate::features::account::{account_rest_controller, account_ui_controller};
 use crate::features::backups::backup_rest_controller;
 use crate::features::buckets::{
     bucket_rest_controller, bucket_ui_controller, store_rest_controller, store_ui_controller,
@@ -79,6 +81,7 @@ pub fn register(
     // and every controller holding one would fail to resolve.
     Auth::register_default(container);
 
+    container.register_instance::<auth::Asked>(Arc::new(auth::Asked::default()));
     register_singletons!(container, auth::SessionMiddleware);
     // Transient, all of them: each holds an `Arc<Auth>`, and a
     // singleton controller is built once — its `Auth` would be one
@@ -87,6 +90,8 @@ pub fn register(
         container,
         auth_ui_controller::AuthUiController,
         auth_rest_controller::AuthRestController,
+        account_ui_controller::AccountUiController,
+        account_rest_controller::AccountRestController,
         dns_rest_controller::DnsRestController,
         zone_ui_controller::ZoneUiController,
         zone_rest_controller::ZoneRestController,
@@ -139,6 +144,7 @@ pub fn register(
 /// that is the mismatch this split exists for.
 fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Router) {
     let pages = auth_ui_controller::AuthUiController::register_ui_routes(container, pages);
+    let pages = account_ui_controller::AccountUiController::register_ui_routes(container, pages);
     let pages = database_ui_controller::DatabaseUiController::register_ui_routes(container, pages);
     let pages = project_ui_controller::ProjectUiController::register_ui_routes(container, pages);
     let pages = store_ui_controller::StoreUiController::register_ui_routes(container, pages);
@@ -155,6 +161,7 @@ fn shared(container: &Container, pages: Router, forms: Router) -> (Router, Route
     );
 
     let forms = auth_rest_controller::AuthRestController::register_routes(container, forms);
+    let forms = account_rest_controller::AccountRestController::register_routes(container, forms);
     let forms = database_rest_controller::DatabaseRestController::register_routes(container, forms);
     let forms = project_rest_controller::ProjectRestController::register_routes(container, forms);
     let forms =
@@ -195,6 +202,7 @@ pub fn routes(container: &Container) -> Router {
     pages
         .merge(forms)
         .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
+        .layer(from_fn(wabot::rest::refuse_cross_origin))
 }
 
 /// The console of one organisation.
@@ -239,6 +247,7 @@ pub fn tenant_routes(container: &Container) -> Router {
     pages
         .merge(forms)
         .merge(embedded_assets(assets::MOUNT, assets::ASSETS))
+        .layer(from_fn(wabot::rest::refuse_cross_origin))
 }
 
 #[cfg(test)]
@@ -385,10 +394,7 @@ pub(crate) mod tests {
             let joined = self
                 .harness
                 .post(&format!("/join/{token}"))
-                .form(&[
-                    ("username", username),
-                    ("password", "a long passphrase here"),
-                ])
+                .form(&[("username", username)])
                 .send()
                 .await;
             joined
@@ -436,11 +442,7 @@ pub(crate) mod tests {
             let response = self
                 .harness
                 .post("/setup")
-                .form(&[
-                    ("username", "jorge"),
-                    ("password", "correct horse battery"),
-                    ("setup_token", &self.setup_token),
-                ])
+                .form(&[("username", "jorge"), ("setup_token", &self.setup_token)])
                 .send()
                 .await;
             response.assert_status(StatusCode::SEE_OTHER);
@@ -508,7 +510,7 @@ pub(crate) mod tests {
         for harness in [&console.harness, &console.tenant] {
             harness
                 .post("/join/whatever-token")
-                .form(&[("username", "somebody"), ("password", "a long passphrase")])
+                .form(&[("username", "somebody")])
                 .send()
                 .await
                 .assert_status(wabot::rest::axum::http::StatusCode::SEE_OTHER);
@@ -1298,6 +1300,7 @@ pub(crate) mod tests {
         // What a field says when autofill is genuinely wanted.
         const PURPOSES: &[&str] = &[
             r#"autocomplete="username""#,
+            r#"autocomplete="username webauthn""#,
             r#"autocomplete="current-password""#,
             r#"autocomplete="new-password""#,
         ];

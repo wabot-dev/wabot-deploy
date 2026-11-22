@@ -9,6 +9,7 @@ use crate::features::organisations::organisation_tabs_component::{
 };
 use crate::features::organisations::texts::t;
 use crate::shell::components::allowlist_field;
+use crate::shell::components::passkey::Passkey;
 use crate::shell::layouts::layout;
 
 /// The four things the node's operator decides about an organisation.
@@ -70,9 +71,11 @@ impl OrganisationTab {
 pub enum Panel<'a> {
     Domain {
         allowlist: Allowlist,
+        passkeys_here: bool,
     },
     Owner {
         owners: &'a [Account],
+        verify: Option<&'a crate::infra::accounts::ceremonies::Begun>,
     },
     Quota,
     Danger {
@@ -89,6 +92,57 @@ pub struct OrganisationSettings<'a> {
     pub tab: OrganisationTab,
     pub panel: Panel<'a>,
     pub error: Option<&'a str>,
+}
+
+fn owner_link(verify: Option<&crate::infra::accounts::ceremonies::Begun>, id: &str) -> String {
+    let prompt = Passkey {
+        verify,
+        ..Default::default()
+    };
+    let form = rsx! {
+        <form method="post" action=(format!("/people/{id}/link"))>
+            (prompt.fields())
+            <button class="btn btn-secondary btn-sm" type="submit">(t("Sign-in link"))</button>
+        </form>
+    }
+    .render()
+    .into_inner();
+    let rendered = prompt.around(form).render().into_inner();
+    rendered
+}
+
+fn owner_invite(
+    verify: Option<&crate::infra::accounts::ceremonies::Begun>,
+    base: &str,
+    no_domain: bool,
+) -> String {
+    let prompt = Passkey {
+        verify,
+        ..Default::default()
+    };
+    let form = rsx! {
+                        <form method="post" action=(format!("{base}/owners"))>
+                            <p class="field-hint">(t("A link that works once and expires in seven days. Whoever takes it chooses their own username, makes a passkey, and administers this organisation."))</p>
+                            @if no_domain {
+                                // **The link lands on the organisation's
+                                // own name**, because that is the door
+                                // their account works at — the node's
+                                // would sign them up and bounce them on
+                                // the first click.
+                                <p class="field-hint">(t("It has no domain yet, so the link will be \
+                                     on this node's name — the account is made, and the console it \
+                                     belongs to exists once you give the organisation one."))</p>
+                            }
+                            (prompt.fields())
+                            <div class="actions">
+                                <button type="submit">(t("Invite an administrator"))</button>
+                            </div>
+                        </form>
+    }
+    .render()
+    .into_inner();
+    let rendered = prompt.around(form).render().into_inner();
+    rendered
 }
 
 pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
@@ -118,7 +172,7 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
         }
 
         @match &page.panel {
-            Panel::Domain { allowlist } => {
+            Panel::Domain { allowlist, passkeys_here } => {
                 <section class="stack" id="domain">
                     <p class="card-label">(t("Domain"))</p>
                     <form method="post" action=(format!("{base}/domain")) class="card stack">
@@ -134,6 +188,9 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                              else's."))</p>
                         <p class="field-hint">(t("Empty takes the console away. Its projects and \
                              its people stay; there is nowhere to administer them from."))</p>
+                        @if *passkeys_here {
+                            <p class="note">(t("Passkeys answer for this name only. A new name leaves them unusable, and their owners need a sign-in link."))</p>
+                        }
                         <div class="actions">
                             <button type="submit">(t("Save"))</button>
                         </div>
@@ -153,7 +210,7 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                     </form>
                 </section>
             }
-            Panel::Owner { owners } => {
+            Panel::Owner { owners, verify } => {
                 <section class="stack" id="owner">
                     <p class="card-label">(t("Answers for it"))</p>
                     <p class="field-hint">(t("The only people inside an organisation this node's \
@@ -169,7 +226,13 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                                     @for owner in *owners {
                                         <tr>
                                             <td class="mono">(&owner.username)</td>
-                                            <td>
+                                            <td class="row">
+                                                (hypertext::Raw::dangerously_create(&owner_link(*verify, &owner.id)))
+                                                <form method="post"
+                                                      action=(format!("/people/{}/sign-out", owner.id))>
+                                                    <button class="btn btn-ghost btn-sm"
+                                                            type="submit">(t("Sign out everywhere"))</button>
+                                                </form>
                                                 <form method="post"
                                                       action=(format!("{base}/owners/{}/delete", owner.id))>
                                                     <button class="btn btn-ghost destructive btn-sm"
@@ -181,24 +244,7 @@ pub fn render<'a>(page: &'a OrganisationSettings<'a>) -> impl Renderable + 'a {
                                 </tbody>
                             </table>
                         }
-                        <form method="post" action=(format!("{base}/owners"))>
-                            <p class="field-hint">(t("A link that works once and expires in seven \
-                                 days. Whoever takes it chooses their own username and password, \
-                                 and administers this organisation."))</p>
-                            @if tenant.domain.is_none() {
-                                // **The link lands on the organisation's
-                                // own name**, because that is the door
-                                // their account works at — the node's
-                                // would sign them up and bounce them on
-                                // the first click.
-                                <p class="field-hint">(t("It has no domain yet, so the link will be \
-                                     on this node's name — the account is made, and the console it \
-                                     belongs to exists once you give the organisation one."))</p>
-                            }
-                            <div class="actions">
-                                <button type="submit">(t("Invite an administrator"))</button>
-                            </div>
-                        </form>
+                        (hypertext::Raw::dangerously_create(&owner_invite(*verify, &base, tenant.domain.is_none())))
                     </div>
                 </section>
             }

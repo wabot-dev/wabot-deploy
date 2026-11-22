@@ -10,7 +10,6 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Accounts", "Cuentas"),
     ("Administrator — everything", "Administrador — todo"),
     ("Ask whoever invited you for another.", "Pídele otra a quien te invitó."),
-    ("At least 12 characters. Nobody here will ever see it.", "Doce caracteres como mínimo. Aquí nadie va a verla nunca."),
     ("Create account", "Crear cuenta"),
     ("Everybody in this organisation. What they can reach is its projects and nothing else on this machine.", "Todo el mundo en esta organización. Lo que alcanzan son sus proyectos y nada más de esta máquina."),
     ("In this organisation", "En esta organización"),

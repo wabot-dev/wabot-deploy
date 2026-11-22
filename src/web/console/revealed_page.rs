@@ -38,13 +38,15 @@ pub enum What<'a> {
     PushToken,
     /// The variables an S3 client reads, for one bucket.
     BucketKey,
+    /// A way in for one person, once.
+    SignInLink,
 }
 
 impl What<'_> {
     fn heading(&self) -> &'static str {
         match self {
             What::JoinToken => t("Paste this into the other node"),
-            What::InvitationInto(_) | What::Invitation => t("Send this link"),
+            What::InvitationInto(_) | What::Invitation | What::SignInLink => t("Send this link"),
             What::PushToken => t("Log in with this"),
             What::BucketKey => t("Give this to the client"),
         }
@@ -94,8 +96,10 @@ pub fn render<'a>(page: &'a Revealed<'a>) -> impl Renderable + 'a {
                     <p class="field-hint">(sentences::invitation_into(name))</p>
                 }
                 What::Invitation => {
-                    <p class="field-hint">(t("It works once and expires in seven days. They \
-                         choose their own username and password."))</p>
+                    <p class="field-hint">(t("It works once and expires in seven days. They choose their own username, and their device makes their passkey."))</p>
+                }
+                What::SignInLink => {
+                    <p class="field-hint">(t("It signs them in once, within fifteen minutes, and makes a passkey on that device. They see who issued it."))</p>
                 }
                 What::PushToken => {
                     <p class="field-hint">(t("Use it as the password wherever this project's \

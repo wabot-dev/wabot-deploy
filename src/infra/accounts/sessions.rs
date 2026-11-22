@@ -10,25 +10,46 @@ use wabot::sqlite::rusqlite::OptionalExtension;
 use wabot::sqlite::SqliteDatabase;
 
 use super::{sha256_hex, Account, AccountResult};
+use crate::domain::entities::session::Session;
 use crate::infra::clock::now_ms;
 
-pub const COOKIE_NAME: &str = "wabot_session";
+/// `__Host-`, because a subdomain cannot set a cookie with that prefix:
+/// a tenant's page under the node's domain could otherwise plant one the
+/// console's host receives.
+pub const COOKIE_NAME: &str = "__Host-wabot_session";
 
-/// How long a session lasts without being used.
+/// How long a session on a trusted device lasts.
 ///
 /// A week: long enough that an operator is not signing in every
 /// morning, short enough that a laptop left in a café stops being a
 /// way in.
 const SESSION_DAYS: i64 = 7;
 
+/// How long a session on a device nobody trusted lasts, whatever the
+/// browser does: one that restores its tabs restores session cookies too.
+const UNTRUSTED_HOURS: i64 = 12;
+
 /// Start a session and return the cookie value.
+///
+/// On a trusted device it lasts a week; on any other it ends with the
+/// browser and, at the latest, twelve hours later. Starting one is proof
+/// of who somebody is, so it counts as verified now.
 ///
 /// The value exists in clear exactly once, here, on its way into a
 /// `Set-Cookie`.
-pub async fn create(database: &SqliteDatabase, account: &Account) -> AccountResult<String> {
+pub async fn start(
+    database: &SqliteDatabase,
+    account: &Account,
+    device_id: Option<&str>,
+) -> AccountResult<String> {
     let token = wabot::prelude::password::generate(48);
     let (hash, id) = (sha256_hex(&token), account.id.clone());
-    let expires_at = now_ms() + SESSION_DAYS * 86_400_000;
+    let device = device_id.map(str::to_string);
+    let expires_at = now_ms()
+        + match device {
+            Some(_) => SESSION_DAYS * 86_400_000,
+            None => UNTRUSTED_HOURS * 3_600_000,
+        };
 
     database
         .write(move |connection| {
@@ -36,9 +57,10 @@ pub async fn create(database: &SqliteDatabase, account: &Account) -> AccountResu
             // is the only place that adds one.
             connection.execute("DELETE FROM session WHERE \"expires_at\" < ?1", [now_ms()])?;
             connection.execute(
-                "INSERT INTO session (\"token_hash\", \"account_id\", \"created_at\", \"expires_at\") \
-                 VALUES (?1, ?2, ?3, ?4)",
-                (hash, id, now_ms(), expires_at),
+                "INSERT INTO session (\"token_hash\", \"account_id\", \"created_at\", \"expires_at\", \
+                                      \"device_id\", \"verified_at\") \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?3)",
+                (hash, id, now_ms(), expires_at, device),
             )?;
             Ok(())
         })
@@ -48,52 +70,132 @@ pub async fn create(database: &SqliteDatabase, account: &Account) -> AccountResu
 }
 
 /// Whose session is this, if it is one?
+#[cfg(test)]
 pub async fn lookup(database: &SqliteDatabase, token: &str) -> AccountResult<Option<Account>> {
+    Ok(find(database, token).await?.map(|(account, _)| account))
+}
+
+/// Whose session is this, and what is known about it.
+pub async fn find(
+    database: &SqliteDatabase,
+    token: &str,
+) -> AccountResult<Option<(Account, Session)>> {
     let hash = sha256_hex(token);
     Ok(database
         .read(move |connection| {
             connection
                 .query_row(
                     "SELECT a.\"id\", a.\"username\", a.\"role\", a.\"theme\", a.\"language\", \
-                     a.\"tenant_id\" \
+                     a.\"tenant_id\", s.\"token_hash\", s.\"device_id\", s.\"verified_at\" \
                      FROM session s \
                      JOIN account a ON a.\"id\" = s.\"account_id\" \
                      WHERE s.\"token_hash\" = ?1 AND s.\"expires_at\" > ?2",
                     (hash, now_ms()),
                     |row| {
-                        Ok(Account {
-                            id: row.get(0)?,
-                            username: row.get(1)?,
-                            // Read on every request, so a role changed
-                            // while somebody is signed in takes effect
-                            // on their next click rather than at their
-                            // next sign-in.
-                            role: crate::domain::values::roles::NodeRole::parse(
-                                &row.get::<_, String>(2)?,
-                            ),
-                            // Read here too, for the same reason: a
-                            // theme chosen on one page has to be the
-                            // one the next page renders in.
-                            theme: crate::domain::values::theme::Theme::parse(
-                                &row.get::<_, String>(3)?,
-                            ),
-                            // And the language, for the third time the
-                            // same reason: a page rendered in the other
-                            // one is a console that forgot mid-click.
-                            language: crate::domain::values::language::Language::parse(
-                                &row.get::<_, String>(4)?,
-                            ),
-                            // And the scope, for the fourth: it is what
-                            // the `Host` is checked against, so it has to
-                            // be the row's answer now rather than the
-                            // one it gave when they signed in.
-                            tenant_id: row.get(5)?,
-                        })
+                        Ok((
+                            Account {
+                                id: row.get(0)?,
+                                username: row.get(1)?,
+                                // Read on every request, so a role changed
+                                // while somebody is signed in takes effect
+                                // on their next click rather than at their
+                                // next sign-in.
+                                role: crate::domain::values::roles::NodeRole::parse(
+                                    &row.get::<_, String>(2)?,
+                                ),
+                                theme: crate::domain::values::theme::Theme::parse(
+                                    &row.get::<_, String>(3)?,
+                                ),
+                                language: crate::domain::values::language::Language::parse(
+                                    &row.get::<_, String>(4)?,
+                                ),
+                                // What the `Host` is checked against, so it
+                                // has to be the row's answer now rather than
+                                // the one it gave when they signed in.
+                                tenant_id: row.get(5)?,
+                            },
+                            Session {
+                                token_hash: row.get(6)?,
+                                device_id: row.get(7)?,
+                                verified_at: row.get(8)?,
+                            },
+                        ))
                     },
                 )
                 .optional()
         })
         .await?)
+}
+
+/// They proved who they are again.
+pub async fn mark_verified(database: &SqliteDatabase, token_hash: &str) -> AccountResult<()> {
+    let hash = token_hash.to_string();
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE session SET \"verified_at\" = ?2 WHERE \"token_hash\" = ?1",
+                (hash, now_ms()),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// The session was made on a device that is trusted now, so it lasts as
+/// a trusted device's does.
+pub async fn bind(
+    database: &SqliteDatabase,
+    token_hash: &str,
+    device_id: &str,
+) -> AccountResult<()> {
+    let (hash, device) = (token_hash.to_string(), device_id.to_string());
+    database
+        .write(move |connection| {
+            connection.execute(
+                "UPDATE session SET \"device_id\" = ?2, \"expires_at\" = ?3 WHERE \"token_hash\" = ?1",
+                (hash, device, now_ms() + SESSION_DAYS * 86_400_000),
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// End every session made on one device.
+pub async fn end_on_device(database: &SqliteDatabase, device_id: &str) -> AccountResult<()> {
+    let device = device_id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute("DELETE FROM session WHERE \"device_id\" = ?1", [device])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// End every session on the node. What a restore does, because the
+/// backup's rows may make a revoked cookie valid again.
+pub async fn end_everyone(database: &SqliteDatabase) -> AccountResult<()> {
+    database
+        .write(|connection| {
+            connection.execute("DELETE FROM session", [])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+/// End every session of one account.
+pub async fn end_all(database: &SqliteDatabase, account_id: &str) -> AccountResult<()> {
+    let account = account_id.to_string();
+    database
+        .write(move |connection| {
+            connection.execute("DELETE FROM session WHERE \"account_id\" = ?1", [account])?;
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 /// End one session.
@@ -109,6 +211,11 @@ pub async fn revoke(database: &SqliteDatabase, token: &str) -> AccountResult<()>
 }
 
 /// The session cookie's value out of a request's headers.
+pub fn from_headers(headers: &HeaderMap) -> Option<String> {
+    cookie(headers, COOKIE_NAME)
+}
+
+/// A cookie's value out of a request's headers.
 ///
 /// Hand-parsed because pulling a cookie crate for one header is a
 /// dependency for a `split`. Cookies are `a=1; b=2`, and a value can
@@ -116,7 +223,7 @@ pub async fn revoke(database: &SqliteDatabase, token: &str) -> AccountResult<()>
 ///
 /// Every `cookie` field is read, not the first: over HTTP/2 a browser may
 /// send one field per cookie, and the console is served over HTTP/2.
-pub fn from_headers(headers: &HeaderMap) -> Option<String> {
+pub fn cookie(headers: &HeaderMap, wanted: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
@@ -124,7 +231,7 @@ pub fn from_headers(headers: &HeaderMap) -> Option<String> {
         .flat_map(|field| field.split(';'))
         .find_map(|pair| {
             let (name, value) = pair.trim().split_once('=')?;
-            (name == COOKIE_NAME).then(|| value.to_string())
+            (name == wanted && !value.is_empty()).then(|| value.to_string())
         })
 }
 
@@ -139,11 +246,14 @@ pub fn from_headers(headers: &HeaderMap) -> Option<String> {
 /// * `SameSite=Lax` — not sent on a cross-site POST, which is CSRF
 ///   protection for every mutating form on the console.
 /// * `Path=/` — the whole console, not a subtree.
-pub fn set_cookie(token: &str) -> String {
-    format!(
-        "{COOKIE_NAME}={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
-        SESSION_DAYS * 86_400
-    )
+///
+/// Only a session on a trusted device outlives the browser.
+pub fn set_cookie(token: &str, lasting: bool) -> String {
+    let base = format!("{COOKIE_NAME}={token}; HttpOnly; Secure; SameSite=Lax; Path=/");
+    match lasting {
+        true => format!("{base}; Max-Age={}", SESSION_DAYS * 86_400),
+        false => base,
+    }
 }
 
 /// The `Set-Cookie` that ends one.
@@ -160,11 +270,10 @@ mod tests {
         let token = super::super::issue_setup_token(&database)
             .await
             .expect("token");
-        let account =
-            super::super::create_admin(&database, &token, "jorge", "correct horse battery")
-                .await
-                .expect("created");
-        let session = create(&database, &account).await.expect("session");
+        let account = super::super::create_admin(&database, &token, "jorge", None)
+            .await
+            .expect("created");
+        let session = start(&database, &account, None).await.expect("session");
         (database, account, session)
     }
 
@@ -269,10 +378,48 @@ mod tests {
     /// silent — the cookie still works.
     #[test]
     fn the_cookie_carries_every_protection() {
-        let cookie = set_cookie("t0ken");
-        for attribute in ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"] {
-            assert!(cookie.contains(attribute), "missing {attribute}: {cookie}");
+        for lasting in [true, false] {
+            let cookie = set_cookie("t0ken", lasting);
+            for attribute in ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"] {
+                assert!(cookie.contains(attribute), "missing {attribute}: {cookie}");
+            }
         }
         assert!(clear_cookie().contains("Max-Age=0"));
+    }
+
+    /// A session on a device nobody trusted is one a browser forgets when
+    /// it closes, and the row ends twelve hours on whatever the browser
+    /// does.
+    #[tokio::test]
+    async fn only_a_trusted_device_keeps_a_session_past_the_browser() {
+        assert!(set_cookie("t", true).contains("Max-Age="));
+        assert!(!set_cookie("t", false).contains("Max-Age="));
+
+        let (database, account, untrusted) = signed_in().await;
+        let trusted = start(&database, &account, Some("dev-1"))
+            .await
+            .expect("one");
+        let expiry = |token: String| {
+            let database = database.clone();
+            async move {
+                let hash = sha256_hex(&token);
+                database
+                    .read(move |connection| {
+                        connection.query_row(
+                            "SELECT \"expires_at\" - \"created_at\" FROM session \
+                             WHERE \"token_hash\" = ?1",
+                            [hash],
+                            |row| row.get::<_, i64>(0),
+                        )
+                    })
+                    .await
+                    .expect("a row")
+            }
+        };
+        assert_eq!(expiry(untrusted).await, UNTRUSTED_HOURS * 3_600_000);
+        assert_eq!(expiry(trusted.clone()).await, SESSION_DAYS * 86_400_000);
+
+        end_on_device(&database, "dev-1").await.expect("ended");
+        assert!(lookup(&database, &trusted).await.expect("query").is_none());
     }
 }

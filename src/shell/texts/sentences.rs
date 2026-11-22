@@ -67,11 +67,11 @@ pub fn invitation_into(name: &str) -> String {
     match current() {
         Language::En => format!(
             "It works once and expires in seven days. Whoever takes it chooses their own \
-             username and password, and administers {name}."
+             username, makes a passkey, and administers {name}."
         ),
         Language::Es => format!(
-            "Sirve una vez y caduca en siete días. Quien lo tome elige su propio usuario y \
-             contraseña, y administra {name}."
+            "Sirve una vez y caduca en siete días. Quien lo tome elige su propio usuario, crea \
+             una llave de acceso y administra {name}."
         ),
     }
 }

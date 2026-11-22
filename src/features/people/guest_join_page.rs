@@ -3,9 +3,11 @@ use hypertext::prelude::*;
 use crate::features::people::texts::t;
 use crate::infra::accounts::invitations::Invitation;
 use crate::shell::components::mark::mark;
+use crate::shell::components::passkey::Passkey;
 use crate::shell::layouts::layout;
 
 pub struct Join<'a> {
+    pub passkey: Option<&'a crate::infra::accounts::ceremonies::Begun>,
     pub heading: &'a str,
     pub token: &'a str,
     pub invitation: Option<&'a Invitation>,
@@ -13,6 +15,29 @@ pub struct Join<'a> {
 }
 
 pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
+    let prompt = Passkey {
+        create: page.passkey,
+        name_field: Some("username"),
+        optional: true,
+        ..Default::default()
+    };
+    let form = rsx! {
+        <form method="post" action=(format!("/join/{}", page.token)) class="card stack"
+              data-wabot-reload>
+            <label for="username">(t("Username"))</label>
+            <input id="username" name="username" type="text"
+                   autocomplete="username webauthn" required autofocus>
+            @if page.passkey.is_some() {
+                <p class="field-hint">(t("Your device makes a passkey: a fingerprint, a face or a PIN, and nothing to remember."))</p>
+            }
+            (prompt.fields())
+            <div class="actions">
+                <button type="submit">(t("Create account"))</button>
+            </div>
+        </form>
+    }
+    .render()
+    .into_inner();
     rsx! {
         (layout::style_tag())
         <main class="shell narrow">
@@ -24,23 +49,7 @@ pub fn render<'a>(page: &'a Join<'a>) -> impl Renderable + 'a {
                 <p class="tagline">
                     (t("You were invited as "))(invitation.node_role.label().to_lowercase())(".")
                 </p>
-                <form method="post" action=(format!("/join/{}", page.token)) class="card stack"
-                      data-wabot-reload>
-                    <label for="username">(t("Username"))</label>
-                    <input id="username" name="username" type="text"
-                           autocomplete="username" required autofocus>
-
-                    <label for="password">(t("Password"))</label>
-                    <input id="password" name="password" type="password"
-                           autocomplete="new-password" required>
-                    <p class="field-hint">
-                        (t("At least 12 characters. Nobody here will ever see it."))
-                    </p>
-
-                    <div class="actions">
-                        <button type="submit">(t("Create account"))</button>
-                    </div>
-                </form>
+                (prompt.around(form.clone()))
             } @else {
                 <section class="card stack">
                     <p>(t("This invitation is not valid. It may have been used already, \

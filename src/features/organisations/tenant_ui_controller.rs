@@ -53,6 +53,7 @@ pub struct OrganisationSettingsPage {
 pub struct TenantUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 #[ui_controller("/", app)]
@@ -191,6 +192,12 @@ impl TenantUiController {
             OrganisationTab::Owner => owners_of(&self.state, &tenant.id).await,
             _ => Vec::new(),
         };
+        let verify = match tab {
+            OrganisationTab::Owner => {
+                crate::shell::auth::verify_prompt(&self.state, &self.auth, &self.asked.host).await
+            }
+            _ => None,
+        };
         let panel = match tab {
             OrganisationTab::Domain => Panel::Domain {
                 allowlist: crate::infra::repositories::allowlists::of(
@@ -198,8 +205,19 @@ impl TenantUiController {
                     &crate::domain::values::allowlist::Door::Organisation(tenant.id.clone()),
                 )
                 .await?,
+                passkeys_here: match tenant.domain.as_deref() {
+                    Some(name) => {
+                        crate::infra::accounts::passkeys::count_for_host(&self.state.database, name)
+                            .await?
+                            > 0
+                    }
+                    None => false,
+                },
             },
-            OrganisationTab::Owner => Panel::Owner { owners: &owners },
+            OrganisationTab::Owner => Panel::Owner {
+                owners: &owners,
+                verify: verify.as_ref(),
+            },
             OrganisationTab::Quota => Panel::Quota,
             OrganisationTab::Danger => Panel::Danger {
                 projects: access::of_tenant(&self.state.database, &tenant.id)

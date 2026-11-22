@@ -99,7 +99,7 @@ network and the databases" below.
 
 Where the tree stands: `src/` is the six rooms of rule 12 and nothing
 else but `main.rs` and the test-only `tree.rs`. Every feature is a
-folder under `src/features` — `access`, `backups`, `buckets`,
+folder under `src/features` — `access`, `account`, `backups`, `buckets`,
 `databases`, `dns`, `network`, `node`, `organisations`, `people`,
 `projects`, `services` and `updates`. Every use case's two ends are a
 request and a response, no controller draws, and no import points
@@ -247,7 +247,7 @@ shipped as bugs before anyone noticed:
 So client behaviour goes through `wabot.island(id, mount)` and a
 `<wabot-island>` host, which the runtime re-hydrates after every swap
 and tears down when the host leaves. `assets/console.js` registers
-eight: `go`, `fields`, `copy`, `project-live`, `updates-live`,
+nine: `go`, `fields`, `copy`, `passkey`, `project-live`, `updates-live`,
 `node-live`, `logs-live` and `stability`. Prefer declarative — the markup carries `data-when` /
 `data-required-when`, so a new dependent field is an attribute rather
 than another script.
@@ -339,9 +339,9 @@ session the console answers 302, so four UI faults in one afternoon — a
 repeated word, a hard-to-hit control, a misaligned icon, a password
 manager hijacking a field — were all found by Jorge and none by the
 tests. Never fabricate a session or a token in the node's database to
-test a page; ask for the click. (`wabot-deploy passwd <username>` exists
-for the operator locked out of their own node — that is recovery, not a
-way to conjure a session.)
+test a page; ask for the click. (`wabot-deploy sign-in-link <username>`
+exists for the operator locked out of their own node — that is recovery,
+not a way to conjure a session.)
 
 ## Working locally
 
@@ -504,6 +504,14 @@ happened:
 
 ## Things that are still open
 
+- Passkeys, trusted devices, approval from one, links and Activity
+  (`docs/access.md`) are written on the branch `access-passkeys` and have
+  run nowhere but the tests. Before they ship: publish
+  `wabot-feature-rest-controller` 0.2.5 and `wabot-addon-auth-passkey`
+  0.2.0, take `[patch.crates-io]` out of `Cargo.toml`, walk them on the
+  VM with its CA trusted, and Jorge looks in each browser. The release
+  signs everybody out once and deletes a password with its account's
+  first passkey — its notes have to say both.
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
 - Images are collected per service, by number (`infra::deploy::surplus`,

@@ -43,7 +43,7 @@ impl StoreUiController {
         }
 
         let domain = crate::infra::node::settings::domain(&self.state.database).await;
-        let derived = crate::infra::repositories::project_domain::domain_for(
+        let derived = crate::infra::repositories::project_domain::public_domain_for(
             &self.state.database,
             &project,
             domain.as_deref(),

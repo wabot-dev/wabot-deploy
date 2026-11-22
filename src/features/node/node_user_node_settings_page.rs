@@ -100,6 +100,8 @@ pub enum Panel {
         /// used to take the controller's whole query struct and render
         /// the error a second time, under the one at the top.
         checked: Option<String>,
+        /// Whether a passkey was made for the current name.
+        passkeys_here: bool,
     },
     Allows {
         /// Every capability there is, so the form cannot be missing one.
@@ -192,7 +194,10 @@ pub fn render<'a>(page: &'a NodeSettings<'a>) -> impl Renderable + 'a {
             }
         }
         @match &page.panel {
-            Panel::Domain { self_id, cells, state, policy, domain, checked } => {
+            Panel::Domain { self_id, cells, state, policy, domain, checked, passkeys_here } => {
+                @if *passkeys_here {
+                    <p class="note">(t("Passkeys answer for this name only. A new name leaves them unusable, and their owners need a sign-in link."))</p>
+                }
                 // The certificate's own cells stream, so it keeps the
                 // island — with only its half of the markup, which the
                 // runtime tolerates: a cell it cannot find is skipped.

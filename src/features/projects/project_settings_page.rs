@@ -6,6 +6,7 @@ use crate::features::projects::project_settings_tabs_component::{
 use crate::features::projects::project_tabs_component::{project_tabs, ProjectPlace};
 use crate::features::projects::texts::t;
 use crate::shell::components::allowlist_field;
+use crate::shell::components::passkey::Passkey;
 use crate::shell::layouts::layout;
 use hypertext::prelude::*;
 
@@ -19,6 +20,7 @@ pub struct ProjectSettings<'a> {
     pub registry_domain: Option<&'a str>,
     pub registry_allowlist: &'a crate::domain::values::allowlist::Allowlist,
     pub query_error: Option<&'a str>,
+    pub verify: Option<&'a crate::infra::accounts::ceremonies::Begun>,
 }
 
 pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
@@ -28,6 +30,20 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
     let members = page.members;
     let tokens = page.tokens;
     let registry_host = page.registry_host;
+    let prompt = Passkey {
+        verify: page.verify,
+        ..Default::default()
+    };
+    let token_form = rsx! {
+        <form method="post" action=(format!("{here}/tokens")) class="row">
+            (prompt.fields())
+            <input name="name" type="text" autocomplete="off" placeholder="what it is for" required>
+            <button class="btn btn-secondary" type="submit">(t("Create token"))</button>
+        </form>
+    }
+    .render()
+    .into_inner();
+    let token_form = prompt.around(token_form).render().into_inner();
     rsx! {
         (layout::style_tag())
         <div class="split">
@@ -124,10 +140,7 @@ pub fn render<'a>(page: &'a ProjectSettings<'a>) -> impl Renderable + 'a {
                     </tbody>
                 </table>
             }
-            <form method="post" action=(format!("{here}/tokens")) class="row">
-                <input name="name" type="text" autocomplete="off" placeholder="what it is for" required>
-                <button class="btn btn-secondary" type="submit">(t("Create token"))</button>
-            </form>
+            (hypertext::Raw::dangerously_create(&token_form))
         </section>
 
         @if allowed.may_administer() {

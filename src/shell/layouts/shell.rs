@@ -82,6 +82,7 @@ const ICON_NODES: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill
 
 const ICON_ORGANISATIONS: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/></svg>"#;
 
+const ICON_ACCOUNT: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>"#;
 const ICON_PEOPLE: &str = r#"<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
 
 const ICON_SEARCH: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>"#;
@@ -100,6 +101,9 @@ pub enum Section {
     People,
     /// The page a search lands on, which is under none of them.
     Search,
+    /// Their own passkeys, devices and activity: the session's, so it is
+    /// in the header and not the rail.
+    Account,
 }
 
 impl Section {
@@ -111,6 +115,7 @@ impl Section {
             Self::Organisations => t("Organisations"),
             Self::People => t("People"),
             Self::Search => t("Go to"),
+            Self::Account => t("Your account"),
         }
     }
 
@@ -122,6 +127,7 @@ impl Section {
             Self::Organisations => "/organisations",
             Self::People => "/people",
             Self::Search => "/go",
+            Self::Account => "/account",
         }
     }
 
@@ -132,6 +138,7 @@ impl Section {
             Self::Nodes => ICON_NODES,
             Self::Organisations => ICON_ORGANISATIONS,
             Self::People | Self::Search => ICON_PEOPLE,
+            Self::Account => ICON_ACCOUNT,
         }
     }
 }
@@ -195,6 +202,20 @@ pub struct Frame {
     pub this_node: Option<(String, String)>,
     pub theme: Theme,
     pub language: crate::domain::values::language::Language,
+    pub notice: Option<Notice>,
+}
+
+/// What the frame tells somebody before the page: a device asking to be
+/// let in as them, or activity they have not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    Request {
+        id: String,
+        name: String,
+        address: Option<String>,
+        at: i64,
+    },
+    Activity(usize),
 }
 
 /// The last segment of a path when it names an action or a tab rather
@@ -208,6 +229,10 @@ fn verb(segment: &str) -> Option<String> {
         "version" => t("Version").to_string(),
         "join" => t("Join a network").to_string(),
         "shown" => t("Shown once").to_string(),
+        "devices" => t("Devices").to_string(),
+        "activity" => t("Activity").to_string(),
+        "approve" => t("A device asking").to_string(),
+        "link" => t("Sign-in link").to_string(),
         _ => return None,
     })
 }
@@ -238,6 +263,7 @@ impl Frame {
             this_node: None,
             theme: account.theme,
             language: account.language,
+            notice: None,
         }
     }
 
@@ -254,6 +280,7 @@ impl Frame {
         path: impl Into<String>,
     ) -> Self {
         let mut frame = Self::new(account, section, path);
+        frame.notice = notice(database, account).await;
         match section {
             Section::Projects => frame.list = projects_list(database, account, &frame.path).await,
             Section::Nodes if frame.admin => {
@@ -283,6 +310,40 @@ impl Frame {
             _ => {}
         }
         frame
+    }
+
+    fn noticed(&self) -> impl Renderable + '_ {
+        rsx! {
+            @match &self.notice {
+                Some(Notice::Request { id, name, address, at }) => {
+                    <section class="card stack notice">
+                        <p>
+                            <strong>(name)</strong>
+                            @if let Some(address) = address {
+                                " · "(address)
+                            }
+                            " · "(crate::shell::layouts::layout::when(*at))
+                            " — "(t("asks to sign in as you."))
+                        </p>
+                        <div class="actions">
+                            <a class="btn" href="/account/approve">(t("It was me"))</a>
+                            <form method="post" action=(format!("/account/requests/{id}/refuse"))>
+                                <button type="submit" class="btn btn-secondary">(t("It was not me"))</button>
+                            </form>
+                        </div>
+                    </section>
+                }
+                Some(Notice::Activity(count)) => {
+                    <section class="card notice">
+                        <p>
+                            (t("Something happened to your account since you last looked:"))" "
+                            <a href="/account/activity">(format!("{count}"))" "(t("in Activity"))</a>
+                        </p>
+                    </section>
+                }
+                None => {}
+            }
+        }
     }
 
     /// Where the brand goes: what this account came to look at.
@@ -344,6 +405,12 @@ impl Frame {
         };
         let crumbs =
             crate::shell::texts::language::scoped(language, || self.crumbs().render().into_inner());
+        let noticed = match self.path.starts_with("/account") {
+            true => String::new(),
+            false => crate::shell::texts::language::scoped(language, || {
+                self.noticed().render().into_inner()
+            }),
+        };
         let body = match self.shows_list() {
             true => "app-body has-list",
             false => "app-body",
@@ -355,6 +422,7 @@ impl Frame {
                     (hypertext::Raw::dangerously_create(&rail))
                     (hypertext::Raw::dangerously_create(&list))
                     <main>
+                        (hypertext::Raw::dangerously_create(&noticed))
                         (hypertext::Raw::dangerously_create(&crumbs))
                         (hypertext::Raw::dangerously_create(&inner))
                     </main>
@@ -497,6 +565,11 @@ impl Frame {
                 <div class="topbar-right">
                     (self.languages())
                     (self.toggle())
+                    <a class="btn btn-ghost btn-icon" href="/account"
+                       title=(format!("{} · {}", t("Your account"), self.username))
+                       aria-label=(t("Your account"))>
+                        (hypertext::Raw::dangerously_create(ICON_ACCOUNT))
+                    </a>
                     // A form, not a link: signing out changes state, and
                     // a GET that changes state is one a prefetcher fires.
                     <form method="post" action="/sign-out">
@@ -951,6 +1024,25 @@ pub const CSS: &str = r#"
   .app-body > main .split { flex-wrap: wrap; }
 }
 "#;
+
+/// A device asking first, because it waits five minutes at most; then
+/// whatever they have not read. Neither is a reason for a page not to
+/// render.
+async fn notice(database: &SqliteDatabase, account: &Account) -> Option<Notice> {
+    use crate::infra::accounts::{events, requests};
+    if let Ok(Some(request)) = requests::pending_for(database, &account.id).await {
+        return Some(Notice::Request {
+            id: request.id,
+            name: request.name,
+            address: request.address,
+            at: request.created_at,
+        });
+    }
+    match events::unseen(database, &account.id).await {
+        Ok(count) if count > 0 => Some(Notice::Activity(count)),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {

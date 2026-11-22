@@ -36,6 +36,12 @@ impl AddServiceRedirect<'_> {
         if hostname.is_wildcard() {
             return Err(crate::domain::values::hostname::WILDCARD_REFUSED.into());
         }
+        crate::infra::repositories::project_domain::refuse_a_foreign_name(
+            database,
+            &self.service.project_id,
+            hostname.as_str(),
+        )
+        .await?;
         let references = dns::references(database).await?;
         if references.is_empty() {
             return Err(

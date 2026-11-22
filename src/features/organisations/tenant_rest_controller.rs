@@ -198,6 +198,16 @@ impl TenantRestController {
             return Ok(see_other("/organisations"));
         };
         let here = OrganisationTab::Owner.path(id);
+        let browser = crate::shell::auth::browser(&request);
+        let form = match crate::shell::auth::read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        if let Err(reason) =
+            crate::shell::auth::proven(&self.state, &self.auth, &browser, &form).await
+        {
+            return Ok(back_with_error(&here, &reason));
+        }
 
         let asked = crate::features::organisations::invite_owner_request::InviteOwnerRequest {
             organisation: id.to_string(),
@@ -344,7 +354,7 @@ mod tests {
         let owner = crate::infra::accounts::create_in(
             &console.database,
             "ana",
-            "a long passphrase here",
+            None,
             crate::domain::values::roles::NodeRole::Admin,
             Some(&tenant.id),
         )

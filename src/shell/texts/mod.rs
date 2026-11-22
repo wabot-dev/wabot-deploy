@@ -64,6 +64,7 @@ mod tests {
             ("shell", shell::TABLE),
             ("shown", shown::TABLE),
             ("access", crate::features::access::texts::TABLE),
+            ("account", crate::features::account::texts::TABLE),
             ("backups", crate::features::backups::texts::TABLE),
             ("buckets", crate::features::buckets::texts::TABLE),
             ("databases", crate::features::databases::texts::TABLE),

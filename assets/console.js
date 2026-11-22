@@ -1064,4 +1064,146 @@
       });
     };
   });
+
+  // A passkey made or given inside a form: the page rendered the options,
+  // this fills hidden fields and submits it again. It fetches nothing.
+  // `create` makes one, `get` signs in with one, `verify` proves who is
+  // asking before something that makes a way in.
+  wabot.island('passkey', function (host, props) {
+    var form = host.querySelector('form');
+    if (!form || !props) return null;
+    var error = host.querySelector('[data-passkey-error]');
+    var say = function (text) {
+      if (!error) return;
+      error.textContent = text || '';
+      if (text) error.removeAttribute('hidden');
+      else error.setAttribute('hidden', '');
+    };
+    var decode = function (text) {
+      var base = text.replace(/-/g, '+').replace(/_/g, '/');
+      while (base.length % 4) base += '=';
+      var binary = atob(base);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    };
+    var encode = function (buffer) {
+      var bytes = new Uint8Array(buffer);
+      var binary = '';
+      for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+    var creation = function (options, name) {
+      var key = JSON.parse(JSON.stringify(options));
+      key.challenge = decode(key.challenge);
+      key.user.id = decode(key.user.id);
+      if (name) {
+        key.user.name = name;
+        key.user.displayName = name;
+      }
+      (key.excludeCredentials || []).forEach(function (one) {
+        one.id = decode(one.id);
+      });
+      return { publicKey: key };
+    };
+    var request = function (options) {
+      var key = JSON.parse(JSON.stringify(options));
+      key.challenge = decode(key.challenge);
+      (key.allowCredentials || []).forEach(function (one) {
+        one.id = decode(one.id);
+      });
+      return { publicKey: key };
+    };
+    var made = function (credential) {
+      var response = credential.response;
+      return JSON.stringify({
+        id: credential.id,
+        rawId: encode(credential.rawId),
+        type: credential.type,
+        response: {
+          clientDataJSON: encode(response.clientDataJSON),
+          attestationObject: encode(response.attestationObject),
+          transports: response.getTransports ? response.getTransports() : []
+        }
+      });
+    };
+    var answered = function (credential) {
+      var response = credential.response;
+      return JSON.stringify({
+        id: credential.id,
+        rawId: encode(credential.rawId),
+        type: credential.type,
+        response: {
+          clientDataJSON: encode(response.clientDataJSON),
+          authenticatorData: encode(response.authenticatorData),
+          signature: encode(response.signature),
+          userHandle: response.userHandle ? encode(response.userHandle) : null
+        }
+      });
+    };
+    var put = function (name, value) {
+      var input = form.querySelector('input[name="' + name + '"]');
+      if (input) input.value = value;
+    };
+    var ready = false;
+    var submit = function (event) {
+      if (ready) {
+        ready = false;
+        return;
+      }
+      if (!props.create && !props.get && !props.verify) return;
+      if (!(window.PublicKeyCredential && navigator.credentials)) {
+        if (props.optional && !props.verify) return;
+        event.preventDefault();
+        say(props.unsupported);
+        return;
+      }
+      event.preventDefault();
+      var submitter = event.submitter;
+      say('');
+      var steps = Promise.resolve();
+      if (props.verify) {
+        steps = steps.then(function () {
+          return navigator.credentials.get(request(props.verify)).then(function (credential) {
+            put('verify_credential', answered(credential));
+          });
+        });
+      }
+      if (props.get) {
+        steps = steps.then(function () {
+          return navigator.credentials.get(request(props.get)).then(function (credential) {
+            put('credential', answered(credential));
+          });
+        });
+      }
+      if (props.create) {
+        steps = steps.then(function () {
+          var field = props.name ? form.querySelector('[name="' + props.name + '"]') : null;
+          var name = field ? field.value.trim() : props.user || '';
+          return navigator.credentials
+            .create(creation(props.create, name))
+            .then(function (credential) {
+              put('credential', made(credential));
+            });
+        });
+      }
+      steps.then(
+        function () {
+          ready = true;
+          if (form.requestSubmit) {
+            form.requestSubmit(submitter && submitter.form === form ? submitter : undefined);
+          } else {
+            form.submit();
+          }
+        },
+        function () {
+          say(props.failed);
+        }
+      );
+    };
+    form.addEventListener('submit', submit);
+    return function () {
+      form.removeEventListener('submit', submit);
+    };
+  });
 })();

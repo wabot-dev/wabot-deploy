@@ -280,18 +280,12 @@ mod tests {
     async fn node() -> (SqliteDatabase, Account, Account) {
         let database = crate::infra::db::open_in_memory().await.expect("open");
         let token = accounts::issue_setup_token(&database).await.expect("token");
-        let admin = accounts::create_admin(&database, &token, "admin", "a long enough passphrase")
+        let admin = accounts::create_admin(&database, &token, "admin", None)
             .await
             .expect("admin");
-        let member = accounts::create_in(
-            &database,
-            "member",
-            "another long passphrase",
-            NodeRole::Member,
-            None,
-        )
-        .await
-        .expect("member");
+        let member = accounts::create_in(&database, "member", None, NodeRole::Member, None)
+            .await
+            .expect("member");
         (database, admin, member)
     }
 

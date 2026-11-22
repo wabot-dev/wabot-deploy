@@ -69,6 +69,27 @@ pub fn authority(domain: Option<&str>, https_port: u16) -> String {
     }
 }
 
+/// Where one console answers: an organisation's own domain, or the node's.
+pub async fn base_url(
+    database: &wabot::sqlite::SqliteDatabase,
+    https_port: u16,
+    tenant_id: Option<&str>,
+) -> String {
+    let theirs = match tenant_id {
+        Some(id) => crate::infra::repositories::tenants::find(database, id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|tenant| tenant.domain),
+        None => None,
+    };
+    let domain = match theirs {
+        Some(domain) => Some(domain),
+        None => settings::domain(database).await,
+    };
+    format!("https://{}", authority(domain.as_deref(), https_port))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,6 +42,7 @@ pub struct BucketForm {
 pub struct BucketUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 impl BucketUiController {
@@ -165,7 +166,7 @@ impl BucketUiController {
             .map(|domain| self.address(&format!("<name>.{domain}")));
         let default_name = format!("{}-restored", service.slug);
         let domain = crate::infra::node::settings::domain(&self.state.database).await;
-        let derived = crate::infra::repositories::project_domain::domain_for(
+        let derived = crate::infra::repositories::project_domain::public_domain_for(
             &self.state.database,
             &project,
             domain.as_deref(),
@@ -289,6 +290,8 @@ impl BucketUiController {
         let path = format!("{back}/{}", bucket.name);
         layout::head(bucket.name.as_str());
         let frame = Frame::load(&self.state.database, &account, Section::Projects, path).await;
+        let verify =
+            crate::shell::auth::verify_prompt(&self.state, &self.auth, &self.asked.host).await;
         let page = crate::features::buckets::bucket_page::BucketView {
             project: &project,
             service: &service,
@@ -301,6 +304,7 @@ impl BucketUiController {
             also_at: also_at.as_deref(),
             may_deploy: allowed.may_deploy(),
             error: query.error.as_deref(),
+            verify: verify.as_ref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::buckets::bucket_page::render(&page)

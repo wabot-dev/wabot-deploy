@@ -1091,7 +1091,7 @@ impl ServiceUiController {
                     );
                     certificates.push((port.id.clone(), hostname.clone(), cells, policy));
                 }
-                let suffix = crate::infra::repositories::project_domain::domain_for(
+                let suffix = crate::infra::repositories::project_domain::public_domain_for(
                     &self.state.database,
                     &project,
                     domain.as_deref(),

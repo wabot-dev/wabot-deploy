@@ -179,6 +179,15 @@ impl NodeUiController {
                     &facts,
                     domain.as_deref(),
                 );
+                let passkeys_here = match domain.as_deref() {
+                    Some(name) => {
+                        crate::infra::accounts::passkeys::count_for_host(&self.state.database, name)
+                            .await
+                            .unwrap_or(0)
+                            > 0
+                    }
+                    None => false,
+                };
                 Panel::Domain {
                     self_id,
                     cells,
@@ -186,6 +195,7 @@ impl NodeUiController {
                     policy,
                     domain,
                     checked: query.checked.clone(),
+                    passkeys_here,
                 }
             }
             NodeTab::Allows => {

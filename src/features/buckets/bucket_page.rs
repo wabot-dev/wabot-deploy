@@ -11,6 +11,7 @@ use crate::features::buckets::texts::t;
 use crate::features::services::service_tabs_component::{service_tabs, ServicePlace};
 use crate::infra::garage::Usage;
 use crate::infra::node::memory::human;
+use crate::shell::components::passkey::Passkey;
 use crate::shell::layouts::layout;
 
 pub struct BucketView<'a> {
@@ -29,6 +30,7 @@ pub struct BucketView<'a> {
     pub also_at: Option<&'a str>,
     pub may_deploy: bool,
     pub error: Option<&'a str>,
+    pub verify: Option<&'a crate::infra::accounts::ceremonies::Begun>,
 }
 
 fn access_label(access: Access) -> &'static str {
@@ -55,6 +57,30 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
         .map(|origin| origin.as_str())
         .collect::<Vec<_>>()
         .join("\n");
+    let prompt = Passkey {
+        verify: page.verify,
+        ..Default::default()
+    };
+    let keys_action = format!("{here}/keys");
+    let key_form = rsx! {
+                <form method="post" action=(keys_action.as_str()) class="stack">
+                    <label for="key-name">(t("What it is for"))</label>
+                    <input id="key-name" name="name" type="text" autocomplete="off" required
+                           placeholder="web">
+                    <label for="key-access">(t("It may"))</label>
+                    <select id="key-access" name="access">
+                        <option value="read_write" selected>(t("Reads and writes"))</option>
+                        <option value="read_only">(t("Reads only"))</option>
+                    </select>
+                    (prompt.fields())
+                    <div class="actions">
+                        <button class="btn btn-secondary" type="submit">(t("Create key"))</button>
+                    </div>
+                </form>
+    }
+    .render()
+    .into_inner();
+    let key_form = prompt.around(key_form).render().into_inner();
     rsx! {
     (layout::style_tag())
         (service_tabs(&page.project.slug, page.service, page.may_deploy, ServicePlace::Buckets))
@@ -126,19 +152,7 @@ pub fn render<'a>(page: &'a BucketView<'a>) -> impl Renderable + 'a {
                 </table>
             }
             @if editable {
-                <form method="post" action=(format!("{here}/keys")) class="stack">
-                    <label for="key-name">(t("What it is for"))</label>
-                    <input id="key-name" name="name" type="text" autocomplete="off" required
-                           placeholder="web">
-                    <label for="key-access">(t("It may"))</label>
-                    <select id="key-access" name="access">
-                        <option value="read_write" selected>(t("Reads and writes"))</option>
-                        <option value="read_only">(t("Reads only"))</option>
-                    </select>
-                    <div class="actions">
-                        <button class="btn btn-secondary" type="submit">(t("Create key"))</button>
-                    </div>
-                </form>
+                (hypertext::Raw::dangerously_create(&key_form))
             }
         </section>
 

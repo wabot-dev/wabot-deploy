@@ -332,6 +332,7 @@ impl BucketRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
+        let browser = crate::shell::auth::browser(&request);
         let found = match self.located(request).await? {
             Ok(found) => found,
             Err(response) => return Ok(response),
@@ -339,6 +340,11 @@ impl BucketRestController {
         let (_, service, Some(bucket), here, form) = found else {
             return Ok(see_other("/"));
         };
+        if let Err(reason) =
+            crate::shell::auth::proven(&self.state, &self.auth, &browser, &form).await
+        {
+            return Ok(back_with_error(&here, &reason));
+        }
         let asked = CreateBucketKeyRequest {
             name: field(&form, "name").to_string(),
             access: field(&form, "access").to_string(),

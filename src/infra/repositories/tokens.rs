@@ -148,10 +148,9 @@ mod tests {
         let token = crate::infra::accounts::issue_setup_token(&database)
             .await
             .expect("token");
-        let admin =
-            crate::infra::accounts::create_admin(&database, &token, "admin", "a long passphrase")
-                .await
-                .expect("admin");
+        let admin = crate::infra::accounts::create_admin(&database, &token, "admin", None)
+            .await
+            .expect("admin");
         let project = crate::infra::repositories::projects::create(&database, "demo")
             .await
             .expect("project");

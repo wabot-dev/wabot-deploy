@@ -15,8 +15,9 @@
 //! ## Plain forms, no JavaScript
 //!
 //! A POST and a 303. It works with scripting off, and the CSRF story
-//! is `SameSite=Lax` on the session cookie rather than a token to
-//! thread through every form.
+//! is the origin check on both routers (`refuse_cross_origin`) with
+//! `SameSite=Lax` behind it, rather than a token to thread through every
+//! form: `SameSite` alone lets a page under the node's own domain in.
 //!
 //! POSTs are `#[raw]` REST endpoints rather than `#[action]`s: an
 //! action answers JSON for the boosted-nav client, and what a form
@@ -36,6 +37,8 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::{Middleware, RestResult};
 
 use crate::domain::entities::account::Account;
+use crate::domain::entities::session::Session;
+use crate::domain::values::browser::{Browser, Ceremony};
 use crate::infra::accounts::{self, sessions};
 
 use crate::shell::state::ConsoleState;
@@ -52,18 +55,25 @@ pub struct SessionMiddleware {
 #[async_trait]
 impl Middleware for SessionMiddleware {
     async fn handle(&self, parts: &Parts, container: &Container) -> RestResult<()> {
-        let Some(token) = sessions::from_headers(&parts.headers) else {
-            return Ok(());
-        };
         // Which frontier this request arrived at, decided by the `Host`
         // before anything read a cookie — see `edge::Tenancy`.
         let scope = parts
             .extensions
             .get::<crate::infra::edge::Tenancy>()
             .map(|tenancy| tenancy.0.clone());
+        container.register_instance::<Asked>(Arc::new(Asked {
+            host: host_of(&parts.headers)
+                .or_else(|| parts.uri.authority().map(|authority| authority.to_string()))
+                .unwrap_or_default(),
+            scope: scope.clone(),
+            pending: accounts::requests::from_headers(&parts.headers),
+        }));
+        let Some(token) = sessions::from_headers(&parts.headers) else {
+            return Ok(());
+        };
 
-        match sessions::lookup(&self.state.database, &token).await {
-            Ok(Some(account)) => {
+        match sessions::find(&self.state.database, &token).await {
+            Ok(Some((account, session))) => {
                 // **The identity and the frontier have to agree.** A
                 // session is a valid session whichever hostname it is
                 // presented at, so without this a tenant's cookie would
@@ -84,7 +94,7 @@ impl Middleware for SessionMiddleware {
                     return Ok(());
                 }
                 let auth = Auth::of(container);
-                let _ = auth.assign(account);
+                let _ = auth.assign(Signed { account, session });
             }
             Ok(None) => {}
             // A database that cannot answer is not a reason to refuse
@@ -94,6 +104,17 @@ impl Middleware for SessionMiddleware {
         }
         Ok(())
     }
+}
+
+/// What a page needs to know about the request it renders, which a view
+/// is not handed: the host a ceremony is bound to, the frontier, and the
+/// cookie a sign-in page reads. Registered per request by the
+/// middleware; the root holds an empty one for a view without it.
+#[derive(Debug, Clone, Default)]
+pub struct Asked {
+    pub host: String,
+    pub scope: Option<String>,
+    pub pending: Option<String>,
 }
 
 /// Where an unauthenticated visitor belongs.
@@ -352,6 +373,124 @@ pub struct PageQuery {
 /// Who this request is, if it is anybody.
 pub fn signed_in(auth: &Auth) -> Option<Account> {
     auth.require_as::<Account>().ok()
+}
+
+/// What `Auth` holds: the account every page reads, and the session the
+/// few that make a way in also need.
+#[derive(serde::Serialize, Deserialize)]
+struct Signed {
+    #[serde(flatten)]
+    account: Account,
+    session: Session,
+}
+
+pub fn session(auth: &Auth) -> Option<Session> {
+    auth.require_as::<Signed>()
+        .ok()
+        .map(|signed| signed.session)
+}
+
+/// Who is at the door. Read before the body, which the form consumes.
+pub fn browser(request: &Request) -> Browser {
+    let headers = request.headers();
+    let host = host_of(headers)
+        .or_else(|| {
+            request
+                .uri()
+                .authority()
+                .map(|authority| authority.to_string())
+        })
+        .unwrap_or_default();
+    let agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    Browser {
+        host,
+        device: accounts::devices::from_headers(headers),
+        name: crate::domain::values::device_name::from_user_agent(agent),
+        address: crate::infra::edge::client_address(request).map(|address| address.to_string()),
+    }
+}
+
+fn host_of(headers: &wabot::rest::axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// A passkey's answer out of a form: `challenge` and `credential`, or the
+/// same with a prefix.
+pub fn ceremony(form: &HashMap<String, String>, prefix: &str) -> Ceremony {
+    Ceremony {
+        challenge: field(form, &format!("{prefix}challenge")).to_string(),
+        credential: field(form, &format!("{prefix}credential")).to_string(),
+    }
+}
+
+/// **Asked again before anything that makes a way in.** A stolen session
+/// cookie must not become permanent access: a passkey verified in the last
+/// five minutes, or one given with this form.
+pub async fn proven(
+    state: &ConsoleState,
+    auth: &Auth,
+    browser: &Browser,
+    form: &HashMap<String, String>,
+) -> Result<(), String> {
+    let (Some(account), Some(session)) = (signed_in(auth), session(auth)) else {
+        return Err(accounts::ceremonies::ASK_AGAIN.into());
+    };
+    accounts::ceremonies::asked_again(
+        &state.database,
+        &browser.host,
+        &session,
+        &account.id,
+        &ceremony(form, "verify_"),
+    )
+    .await
+}
+
+/// The prompt a page renders before a form that makes a way in: none when
+/// the session is fresh or the account has no passkey here to give.
+pub async fn verify_prompt(
+    state: &ConsoleState,
+    auth: &Auth,
+    host: &str,
+) -> Option<accounts::ceremonies::Begun> {
+    let (account, session) = (signed_in(auth)?, session(auth)?);
+    if session.fresh(crate::infra::clock::now_ms()) {
+        return None;
+    }
+    let rp = accounts::ceremonies::relying_party(host)?;
+    if accounts::passkeys::ids_for(&state.database, &account.id, &rp.id)
+        .await
+        .ok()?
+        .is_empty()
+    {
+        return None;
+    }
+    accounts::ceremonies::begin_assertion(
+        &state.database,
+        &rp,
+        accounts::challenges::Purpose::Verify,
+        Some(&account.id),
+    )
+    .await
+    .ok()
+}
+
+/// A 303 setting several cookies.
+pub fn see_other_with_cookies(location: &str, cookies: &[String]) -> Response {
+    let mut response = Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, location);
+    for cookie in cookies {
+        response = response.header(header::SET_COOKIE, cookie);
+    }
+    response
+        .body(Body::empty())
+        .expect("a constant response is well-formed")
 }
 
 fn text(status: StatusCode, body: &'static str) -> Response {

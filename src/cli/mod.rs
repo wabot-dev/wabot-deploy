@@ -14,9 +14,9 @@ pub mod import;
 pub mod install;
 pub mod join;
 pub mod log_writer;
-pub mod passwd;
 pub mod serve;
 pub mod setup_token;
+pub mod sign_in_link;
 
 use std::path::PathBuf;
 
@@ -74,20 +74,14 @@ pub enum Command {
     /// operator who has to hand one to somebody else.
     SetupToken,
 
-    /// Give an account a new password, and print it.
+    /// Print a link that signs somebody in once, within fifteen minutes.
     ///
-    /// Because a node whose only administrator forgot their password had
-    /// no way back in: the setup token refuses once an account exists —
-    /// deliberately, it is what stops a second administrator being minted
-    /// — and nothing else could write a password. The console was locked
-    /// and the machine was fine.
-    ///
-    /// This grants nothing new. Whoever runs it already has root on the
-    /// box, which means the binary, the database and every container; a
-    /// recovery path that root does not have is a lock on a door with no
-    /// wall. What it does is make the recovery obvious instead of a
-    /// reinstall.
-    Passwd {
+    /// The way back into a console when every device that could approve a
+    /// new one is gone, or for a node opened by its address, where no
+    /// passkey can be made. It grants nothing new: whoever runs it already
+    /// has root on the box. Their activity says it was issued here.
+    #[command(alias = "passwd")]
+    SignInLink {
         /// Whose. Matched the way signing in matches it — case-insensitive.
         #[arg(value_name = "USERNAME")]
         username: String,
@@ -432,13 +426,15 @@ mod tests {
     }
 
     #[test]
-    fn passwd_takes_whose() {
-        let cli = Cli::parse_from(["wabot-deploy", "passwd", "jorge"]);
-        assert!(matches!(cli.command, Command::Passwd { username } if username == "jorge"));
-        assert!(
-            Cli::try_parse_from(["wabot-deploy", "passwd"]).is_err(),
-            "and it will not guess"
-        );
+    fn sign_in_link_takes_whose_and_answers_to_its_old_name() {
+        for verb in ["sign-in-link", "passwd"] {
+            let cli = Cli::parse_from(["wabot-deploy", verb, "jorge"]);
+            assert!(matches!(cli.command, Command::SignInLink { username } if username == "jorge"));
+            assert!(
+                Cli::try_parse_from(["wabot-deploy", verb]).is_err(),
+                "and it will not guess"
+            );
+        }
     }
 
     #[test]

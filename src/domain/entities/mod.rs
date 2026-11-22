@@ -23,5 +23,6 @@ pub mod release;
 pub mod replica;
 pub mod service;
 pub mod service_event;
+pub mod session;
 pub mod tenant;
 pub mod volume;

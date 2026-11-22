@@ -113,6 +113,7 @@ pub enum WhatKind {
     Invitation,
     PushToken,
     BucketKey,
+    SignInLink,
 }
 
 impl WhatKind {
@@ -123,6 +124,7 @@ impl WhatKind {
             WhatKind::Invitation => What::Invitation,
             WhatKind::PushToken => What::PushToken,
             WhatKind::BucketKey => What::BucketKey,
+            WhatKind::SignInLink => What::SignInLink,
         }
     }
 }
@@ -192,6 +194,24 @@ impl RevealUiController {
             "/people",
             Section::People,
             || WhatKind::Invitation,
+        )
+        .await
+    }
+
+    /// A way in for one person, issued by somebody who could remove them.
+    #[view("/people/link")]
+    #[middleware(SessionMiddleware)]
+    async fn sign_in_link(&self, query: ShownPage) -> UiResult<ViewOutcome> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(Redirect::found("/sign-in").into());
+        };
+        self.show(
+            &account,
+            query.nonce.as_deref(),
+            "/people/link",
+            "/people",
+            Section::People,
+            || WhatKind::SignInLink,
         )
         .await
     }

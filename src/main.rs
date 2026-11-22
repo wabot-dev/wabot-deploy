@@ -59,7 +59,7 @@ fn main() -> std::process::ExitCode {
             Command::Doctor => cli::doctor::run(config, &cli.config).await,
             Command::Join { token } => cli::join::run(config, &token).await,
             Command::SetupToken => cli::setup_token::run(config).await,
-            Command::Passwd { username } => cli::passwd::run(config, &username).await,
+            Command::SignInLink { username } => cli::sign_in_link::run(config, &username).await,
             Command::Allowlist { door, addresses } => {
                 cli::allowlist::run(config, door, &addresses).await
             }

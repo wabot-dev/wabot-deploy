@@ -6,8 +6,9 @@
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Give this to the client", "Dale esto al cliente"),
+    ("It signs them in once, within fifteen minutes, and makes a passkey on that device. They see who issued it.", "Les hace entrar una vez, antes de quince minutos, y crea una llave de acceso en ese dispositivo. Verán quién lo emitió."),
     ("It works once and expires in 24 hours. That machine has to be a node already: install it there first, then join.", "Sirve una vez y caduca en 24 horas. Esa máquina tiene que ser ya un nodo: instálalo allí primero, y luego únelo."),
-    ("It works once and expires in seven days. They choose their own username and password.", "Sirve una vez y caduca en siete días. Eligen su propio usuario y contraseña."),
+    ("It works once and expires in seven days. They choose their own username, and their device makes their passkey.", "Sirve una vez y caduca en siete días. Eligen su propio usuario, y su dispositivo crea su llave de acceso."),
     ("Log in with this", "Entra con esto"),
     ("Most S3 clients read these variables as they are. The key opens this bucket and no other; revoking it on the bucket's page stops it at once.", "La mayoría de los clientes S3 leen estas variables tal cual. La clave abre este bucket y ningún otro; revocarla en la página del bucket la detiene en el acto."),
     ("On the other node's console: Network, then Join a network. Or on its terminal:", "En la consola del otro nodo: Red, y luego Unirse a una red. O en su terminal:"),

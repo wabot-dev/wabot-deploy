@@ -113,6 +113,13 @@ instant-acme = { version = "0.8", default-features = false, features = [
 # `SqliteJobRepository`. That missing re-export belongs upstream; this
 # names the crate in the meantime.
 wabot-addon-async-sqlite = "0.2"
+# Passkeys: the options a page hands the browser and verifying what comes
+# back, on `ring`, which the binary already carries. `webauthn-rs` needs
+# OpenSSL, and a static musl build cross-compiled with zig has none.
+wabot-addon-auth-passkey = "0.2"
+# The QR code "Add a device" shows, drawn as SVG on the server so the page
+# needs no script for it.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Reading a certificate's expiry. Already in the tree through rcgen's
 # `x509-parser` feature, so this names it rather than adding it.
@@ -251,6 +258,8 @@ tempfile = "3"
 # the SQLite one a node uses: a test wants the queue's behaviour, not
 # its durability, and this one needs no tables.
 wabot-addon-async-in-memory = "0.2"
+# A software authenticator, so a sign-in is walked end to end in a test.
+wabot-addon-auth-passkey = { version = "0.2", features = ["testing"] }
 
 # What a release is built with.
 #
@@ -277,3 +286,8 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 codegen-units = 4
+
+[patch.crates-io]
+wabot-core = { path = "../../framework/wabot-rust/crates/wabot-core" }
+wabot-feature-rest-controller = { path = "../../framework/wabot-rust/crates/wabot-feature-rest-controller" }
+wabot-addon-auth-passkey = { path = "../../framework/wabot-rust/crates/wabot-addon-auth-passkey" }

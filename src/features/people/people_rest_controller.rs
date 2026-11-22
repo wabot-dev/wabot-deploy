@@ -12,11 +12,9 @@ use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
 use crate::domain::values::roles::{NodeRole, ProjectRole};
-use crate::infra::accounts::sessions;
 
 use crate::shell::auth::{
-    back_with_error, field, read_form, see_other, see_other_with_cookie, signed_in,
-    SessionMiddleware,
+    back_with_error, browser, field, proven, read_form, see_other, signed_in, SessionMiddleware,
 };
 use crate::shell::state::ConsoleState;
 
@@ -39,10 +37,14 @@ impl PeopleRestController {
         if !crate::domain::authz::node_user::manages_the_machine(&account) {
             return Ok(see_other("/"));
         }
+        let browser = browser(&request);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
+        if let Err(reason) = proven(&self.state, &self.auth, &browser, &form).await {
+            return Ok(back_with_error("/people", &reason));
+        }
 
         let asked = crate::features::people::invite_person_request::InvitePersonRequest {
             role: NodeRole::parse(field(&form, "node_role")),
@@ -180,6 +182,85 @@ impl PeopleRestController {
         }
     }
 
+    #[post("/people/:account/link")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn issue_a_sign_in_link(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let path = request.uri().path().to_string();
+        let Some(person) = crate::shell::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
+            return Ok(see_other("/people"));
+        };
+        let browser = browser(&request);
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        if let Err(reason) = proven(&self.state, &self.auth, &browser, &form).await {
+            return Ok(back_with_error("/people", &reason));
+        }
+        let asked =
+            crate::features::people::issue_sign_in_link_request::IssueSignInLinkRequest { person };
+        match crate::features::people::node_user_issue_sign_in_link::run(
+            &self.state.database,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            Ok(link) => {
+                let url = format!(
+                    "{}/link/{}",
+                    self.state.base_url_for(link.tenant_id.as_deref()).await,
+                    link.token
+                );
+                let nonce = self.state.reveals.stash(url);
+                Ok(see_other(&format!(
+                    "/people/link?{}",
+                    form_urlencoded::Serializer::new(String::new())
+                        .append_pair("nonce", &nonce)
+                        .finish()
+                )))
+            }
+            Err(reason) => Ok(back_with_error("/people", &reason)),
+        }
+    }
+
+    #[post("/people/:account/sign-out")]
+    #[raw]
+    #[middleware(SessionMiddleware)]
+    async fn sign_out_everywhere(&self, request: Request) -> RestResult<Response> {
+        let Some(account) = signed_in(&self.auth) else {
+            return Ok(see_other("/sign-in"));
+        };
+        let path = request.uri().path().to_string();
+        let Some(person) = crate::shell::auth::segments(&path)
+            .get(1)
+            .map(|id| id.to_string())
+        else {
+            return Ok(see_other("/people"));
+        };
+        let asked =
+            crate::features::people::sign_out_everywhere_request::SignOutEverywhereRequest {
+                person,
+            };
+        match crate::features::people::node_user_sign_out_everywhere::run(
+            &self.state.database,
+            &account,
+            &asked,
+        )
+        .await
+        {
+            Ok(()) => Ok(see_other("/people")),
+            Err(reason) => Ok(back_with_error("/people", &reason)),
+        }
+    }
+
     /// Accept an invitation: create the account and sign them in.
     #[post("/join/:token")]
     #[raw]
@@ -192,31 +273,23 @@ impl PeopleRestController {
             return Ok(see_other("/sign-in"));
         };
         let here = format!("/join/{token}");
+        let browser = browser(&request);
 
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
 
-        let account = match crate::features::people::guest_join_as_node_user::run(
+        match crate::features::people::guest_join_as_node_user::run(
             &self.state.database,
-            &joining(&token, &form),
+            &joining(&token, &form, browser),
         )
         .await
         {
-            Ok(account) => account,
-            Err(reason) => return Ok(back_with_error(&here, &reason)),
-        };
-
-        // Signed in straight away: they just proved they hold the
-        // invitation and chose a password, and asking them to type it
-        // again is the same secret twice in a row.
-        match sessions::create(&self.state.database, &account).await {
-            Ok(token) => Ok(see_other_with_cookie("/", sessions::set_cookie(&token))),
-            Err(error) => {
-                tracing::error!(%error, "could not start a session after joining");
-                Ok(see_other("/sign-in"))
-            }
+            Ok(signed) => Ok(crate::features::access::auth_rest_controller::arrived(
+                "/", signed,
+            )),
+            Err(reason) => Ok(back_with_error(&here, &reason)),
         }
     }
 }
@@ -227,13 +300,13 @@ impl PeopleRestController {
 pub(crate) fn joining(
     token: &str,
     form: &std::collections::HashMap<String, String>,
+    browser: crate::domain::values::browser::Browser,
 ) -> JoinRequest {
     JoinRequest {
         token: token.to_string(),
         username: crate::shell::auth::field(form, "username").to_string(),
-        // Not trimmed: the spaces are part of it, and removing them
-        // silently produces a password nobody can type back.
-        password: form.get("password").cloned().unwrap_or_default(),
+        passkey: crate::shell::auth::ceremony(form, ""),
+        browser,
     }
 }
 
@@ -494,7 +567,13 @@ mod tests {
         let token = invite(&console, &cookie, &[("node_role", "member")]).await;
 
         for path in ["/sign-in".to_string(), format!("/join/{token}")] {
-            let body = console.harness.get(&path).send().await.body;
+            let body = console
+                .harness
+                .get(&path)
+                .header("host", "node.example.com")
+                .send()
+                .await
+                .body;
             assert!(
                 body.contains("<form") && body.contains("data-wabot-reload"),
                 "{path} has a form a boosted submit would swap under"

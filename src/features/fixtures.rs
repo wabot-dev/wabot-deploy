@@ -41,7 +41,7 @@ async fn person(
     role: NodeRole,
     tenant: Option<&str>,
 ) -> Account {
-    accounts::create_in(database, username, "a long passphrase here", role, tenant)
+    accounts::create_in(database, username, None, role, tenant)
         .await
         .expect("account")
 }

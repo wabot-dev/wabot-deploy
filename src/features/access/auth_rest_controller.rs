@@ -11,7 +11,36 @@ use wabot::rest::axum::http::{header, StatusCode};
 use wabot::rest::axum::response::Response;
 use wabot::rest::RestResult;
 
+use crate::features::access::claim_the_node_request::ClaimTheNodeRequest;
+use crate::features::access::passkey_sign_in_request::PasskeySignInRequest;
+use crate::features::access::passkey_sign_in_response::PasskeySignInResponse;
+use crate::features::access::redeem_approval_request::RedeemApprovalRequest;
+use crate::features::access::sign_in_request::SignInRequest;
+use crate::features::access::signed_in_response::SignedInResponse;
+use crate::features::access::use_link_request::UseLinkRequest;
+use crate::infra::accounts;
 use crate::shell::auth::*;
+
+/// Where a sign-in lands, with the cookies it set: the session, and the
+/// device token when this sign-in trusted the browser.
+pub(crate) fn arrived(location: &str, signed: SignedInResponse) -> Response {
+    let mut cookies = vec![sessions::set_cookie(&signed.session, signed.lasting)];
+    if let Some(device) = &signed.device {
+        cookies.push(accounts::devices::set_cookie(device));
+    }
+    see_other_with_cookies(location, &cookies)
+}
+
+/// **Which frontier they are signing in to**, decided by the `Host` before
+/// this ran and read here rather than asked for: a username belongs to a
+/// scope, so three people called `jorge` is the ordinary case. See
+/// migration `0057`.
+fn frontier(request: &Request) -> Option<String> {
+    request
+        .extensions()
+        .get::<crate::infra::edge::Tenancy>()
+        .map(|tenancy| tenancy.0.clone())
+}
 
 // ---------- form submissions ---------------------------------------------
 
@@ -31,20 +60,20 @@ impl AuthRestController {
     #[post("/setup")]
     #[raw]
     async fn create_admin(&self, request: Request) -> RestResult<Response> {
+        let browser = browser(&request);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
-
-        match crate::features::access::guest_claim_the_node::run(
-            &self.state.database,
-            field(&form, "setup_token"),
-            field(&form, "username"),
-            form.get("password").map(String::as_str).unwrap_or_default(),
-        )
-        .await
+        let asked = ClaimTheNodeRequest {
+            setup_token: field(&form, "setup_token").to_string(),
+            username: field(&form, "username").to_string(),
+            passkey: ceremony(&form, ""),
+            browser,
+        };
+        match crate::features::access::guest_claim_the_node::run(&self.state.database, &asked).await
         {
-            Ok(token) => Ok(see_other_with_cookie("/", sessions::set_cookie(&token))),
+            Ok(signed) => Ok(arrived("/", signed)),
             Err(reason) => Ok(back_with_error("/setup", &reason)),
         }
     }
@@ -52,31 +81,103 @@ impl AuthRestController {
     #[post("/sign-in")]
     #[raw]
     async fn sign_in(&self, request: Request) -> RestResult<Response> {
-        // **Which frontier they are signing in to**, decided by the
-        // `Host` before this ran and read here rather than asked for: a
-        // username belongs to a scope, so three people called `jorge`
-        // is the ordinary case and a search over the whole table would
-        // find whichever came first. See migration `0057`.
-        let scope = request
-            .extensions()
-            .get::<crate::infra::edge::Tenancy>()
-            .map(|tenancy| tenancy.0.clone());
-
+        let (browser, scope) = (browser(&request), frontier(&request));
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
+        let asked = SignInRequest {
+            username: field(&form, "username").to_string(),
+            password: form.get("password").cloned().unwrap_or_default(),
+            scope,
+            browser,
+        };
+        match crate::features::access::guest_sign_in::run(&self.state.database, &asked).await {
+            Ok(signed) => Ok(arrived("/", signed)),
+            Err(reason) => Ok(back_with_error("/sign-in", &reason)),
+        }
+    }
 
-        match crate::features::access::guest_sign_in::run(
+    #[post("/sign-in/passkey")]
+    #[raw]
+    async fn sign_in_with_a_passkey(&self, request: Request) -> RestResult<Response> {
+        let (browser, scope) = (browser(&request), frontier(&request));
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = PasskeySignInRequest {
+            passkey: ceremony(&form, ""),
+            scope,
+            browser,
+        };
+        match crate::features::access::guest_sign_in_with_a_passkey::run(
             &self.state.database,
-            field(&form, "username"),
-            form.get("password").map(String::as_str).unwrap_or_default(),
-            scope.as_deref(),
+            &asked,
         )
         .await
         {
-            Ok(token) => Ok(see_other_with_cookie("/", sessions::set_cookie(&token))),
+            Ok(PasskeySignInResponse::SignedIn(signed)) => Ok(arrived("/", signed)),
+            Ok(PasskeySignInResponse::Awaiting(pending)) => Ok(see_other_with_cookie(
+                "/sign-in/approval",
+                accounts::requests::set_cookie(&pending),
+            )),
             Err(reason) => Ok(back_with_error("/sign-in", &reason)),
+        }
+    }
+
+    #[post("/sign-in/approval")]
+    #[raw]
+    async fn redeem_an_approval(&self, request: Request) -> RestResult<Response> {
+        let browser = browser(&request);
+        let pending = accounts::requests::from_headers(request.headers());
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = RedeemApprovalRequest {
+            pending,
+            code: field(&form, "code").to_string(),
+            trust: form.contains_key("trust"),
+            browser,
+        };
+        match crate::features::access::guest_redeem_an_approval::run(&self.state.database, &asked)
+            .await
+        {
+            Ok(signed) => {
+                let mut response = arrived("/", signed);
+                if let Ok(value) = accounts::requests::clear_cookie().parse() {
+                    response.headers_mut().append(header::SET_COOKIE, value);
+                }
+                Ok(response)
+            }
+            Err(reason) => Ok(back_with_error("/sign-in/approval", &reason)),
+        }
+    }
+
+    #[post("/link/:token")]
+    #[raw]
+    async fn use_a_link(&self, request: Request) -> RestResult<Response> {
+        let (browser, scope) = (browser(&request), frontier(&request));
+        let path = request.uri().path().to_string();
+        let token = segments(&path)
+            .get(1)
+            .map(|token| token.to_string())
+            .unwrap_or_default();
+        let form = match read_form(request).await {
+            Ok(form) => form,
+            Err(response) => return Ok(response),
+        };
+        let asked = UseLinkRequest {
+            token: token.clone(),
+            scope,
+            passkey: ceremony(&form, ""),
+            trust: form.contains_key("trust"),
+            browser,
+        };
+        match crate::features::access::guest_use_a_link::run(&self.state.database, &asked).await {
+            Ok(signed) => Ok(arrived("/", signed)),
+            Err(reason) => Ok(back_with_error(&format!("/link/{token}"), &reason)),
         }
     }
 
@@ -283,6 +384,16 @@ mod tests {
     async fn signing_in_and_out_moves_the_session() {
         let console = Console::new().await;
         console.signed_in().await;
+        let jorge = crate::infra::accounts::by_username(&console.database, "jorge", None)
+            .await
+            .expect("read")
+            .expect("jorge");
+        crate::infra::accounts::legacy_password(
+            &console.database,
+            &jorge.id,
+            "correct horse battery",
+        )
+        .await;
 
         let response = console
             .harness
@@ -348,6 +459,66 @@ mod tests {
         }
     }
 
+    /// A page under the node's domain is the same site as the console, so
+    /// `SameSite=Lax` sends the cookie with whatever it posts. The origin
+    /// is what tells the console's own forms from that page's.
+    #[tokio::test]
+    async fn a_form_posted_from_another_origin_changes_nothing() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        let token = cookie.split_once('=').expect("a value").1.to_string();
+        let language = |console: &Console| {
+            let token = token.clone();
+            let database = console.database.clone();
+            async move {
+                sessions::lookup(&database, &token)
+                    .await
+                    .expect("read")
+                    .expect("a session")
+                    .language
+            }
+        };
+
+        let refused = console
+            .harness
+            .post("/language")
+            .header("cookie", &cookie)
+            .header("host", "node.example.com")
+            .header("origin", "https://web.shop.node.example.com")
+            .form(&[("language", "es"), ("from", "/projects")])
+            .send()
+            .await;
+        refused.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(
+            language(&console).await,
+            crate::domain::values::language::Language::En
+        );
+
+        let accepted = console
+            .harness
+            .post("/language")
+            .header("cookie", &cookie)
+            .header("host", "node.example.com")
+            .header("origin", "https://node.example.com")
+            .form(&[("language", "es"), ("from", "/projects")])
+            .send()
+            .await;
+        accepted.assert_status(StatusCode::SEE_OTHER);
+        assert_eq!(
+            language(&console).await,
+            crate::domain::values::language::Language::Es
+        );
+    }
+
+    /// The session cookie carries a prefix a subdomain cannot set, so a
+    /// tenant's page cannot plant one the console receives.
+    #[test]
+    fn the_session_cookie_is_one_only_this_host_can_set() {
+        let cookie = sessions::set_cookie("t0ken", true);
+        assert!(cookie.starts_with("__Host-"), "{cookie}");
+        assert!(!cookie.to_ascii_lowercase().contains("domain="), "{cookie}");
+    }
+
     /// A wrong username and a wrong password must be indistinguishable,
     /// or the form is a list of which accounts exist.
     #[tokio::test]
@@ -406,7 +577,7 @@ mod tests {
 
     #[test]
     fn a_signed_in_response_carries_the_cookie() {
-        let response = see_other_with_cookie("/", sessions::set_cookie("t0ken"));
+        let response = see_other_with_cookie("/", sessions::set_cookie("t0ken", true));
         let cookie = response
             .headers()
             .get(header::SET_COOKIE)

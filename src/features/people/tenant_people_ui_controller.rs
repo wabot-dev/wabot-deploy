@@ -22,6 +22,7 @@ use crate::shell::state::ConsoleState;
 pub struct TenantPeopleUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 #[ui_controller("/", app)]
@@ -59,12 +60,15 @@ impl TenantPeopleUiController {
 
         layout::head("People");
         let frame = Frame::load(&self.state.database, &account, Section::People, "/people").await;
+        let verify =
+            crate::shell::auth::verify_prompt(&self.state, &self.auth, &self.asked.host).await;
         let page = crate::features::people::tenant_user_people_page::People {
             people: &people,
             live: &live,
             projects: &projects,
             account: &account,
             query_error: query.error.as_deref(),
+            verify: verify.as_ref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::people::tenant_user_people_page::render(&page)
@@ -95,7 +99,22 @@ impl TenantPeopleUiController {
             Some(name) => name.to_string(),
             None => t("Join this organisation").to_string(),
         };
+        let passkey = match (
+            invitation.is_some(),
+            crate::infra::accounts::ceremonies::relying_party(&self.asked.host),
+        ) {
+            (true, Some(rp)) => Some(
+                crate::infra::accounts::ceremonies::begin_registration(
+                    &self.state.database,
+                    &rp,
+                    None,
+                )
+                .await?,
+            ),
+            _ => None,
+        };
         let page = crate::features::people::guest_join_page::Join {
+            passkey: passkey.as_ref(),
             heading: &heading,
             token: &token,
             invitation: invitation.as_ref(),

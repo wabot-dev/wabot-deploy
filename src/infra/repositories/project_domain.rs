@@ -46,3 +46,61 @@ pub async fn domain_for(
     };
     theirs.or_else(|| node_domain.map(str::to_string))
 }
+
+/// The domain a page proposes a project's **public** names under.
+///
+/// Not [`domain_for`], which also names what only the project's own
+/// containers resolve: an organisation's project whose organisation has no
+/// domain is proposed nothing, rather than a name under the node's — which
+/// would put its pages on the same site as the node's console.
+pub async fn public_domain_for(
+    database: &SqliteDatabase,
+    project: &Project,
+    node_domain: Option<&str>,
+) -> Option<String> {
+    match &project.tenant_id {
+        Some(_) => domain_for(database, project, None).await,
+        None => node_domain.map(str::to_string),
+    }
+}
+
+/// Refuse a public name an organisation's project may not answer on.
+///
+/// An invariant of the project rather than a question of who is asking:
+/// the node's operator naming a tenant's service under the node's domain
+/// puts the same page on the same site as the console.
+pub async fn refuse_a_foreign_name(
+    database: &SqliteDatabase,
+    project_id: &str,
+    hostname: &str,
+) -> Result<(), String> {
+    let project = crate::infra::repositories::projects::find(database, project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("no such project")?;
+    let Some(tenant_id) = &project.tenant_id else {
+        return Ok(());
+    };
+    let tenants = crate::infra::repositories::tenants::all(database)
+        .await
+        .map_err(|error| error.to_string())?;
+    let own = tenants
+        .iter()
+        .find(|tenant| &tenant.id == tenant_id)
+        .and_then(|tenant| tenant.domain.clone());
+    let others: Vec<String> = tenants
+        .iter()
+        .filter(|tenant| &tenant.id != tenant_id)
+        .filter_map(|tenant| tenant.domain.clone())
+        .collect();
+    let node_domain = crate::infra::node::settings::domain(database).await;
+    match crate::domain::policies::tenant_names::refusal(
+        hostname,
+        node_domain.as_deref(),
+        own.as_deref(),
+        &others,
+    ) {
+        Some(reason) => Err(reason.to_string()),
+        None => Ok(()),
+    }
+}

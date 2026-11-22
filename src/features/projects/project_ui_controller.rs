@@ -27,6 +27,7 @@ pub struct ProjectQuery {
 pub struct ProjectUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 #[ui_controller("/", app)]
@@ -281,6 +282,8 @@ impl ProjectUiController {
         layout::head(&format!("{} settings", project.name));
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let verify =
+            crate::shell::auth::verify_prompt(&self.state, &self.auth, &self.asked.host).await;
         let page = crate::features::projects::project_settings_page::ProjectSettings {
             project: &project,
             allowed,
@@ -291,6 +294,7 @@ impl ProjectUiController {
             registry_domain: registry_domain.as_deref(),
             registry_allowlist: &registry_allowlist,
             query_error: query.error.as_deref(),
+            verify: verify.as_ref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::projects::project_settings_page::render(&page)

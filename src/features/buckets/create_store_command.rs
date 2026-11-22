@@ -46,9 +46,10 @@ impl CreateStore<'_> {
         let disk_limit = presets::parse_bytes(&self.asked.disk)?
             .ok_or("a store needs a disk size: what its buckets may hold together")?;
         let hostname = match self.asked.hostname.trim() {
-            "" => self.derived(database).await.ok_or(
-                "this node has no domain to derive a name under, so the store needs one typed",
-            )?,
+            "" => self
+                .derived(database)
+                .await
+                .ok_or("there is no domain to derive a name under, so the store needs one typed")?,
             typed => typed.to_string(),
         };
         let parsed = crate::domain::values::hostname::Hostname::parse(&hostname);
@@ -58,6 +59,12 @@ impl CreateStore<'_> {
             );
         }
         let hostname = parsed.as_str().to_string();
+        crate::infra::repositories::project_domain::refuse_a_foreign_name(
+            database,
+            &self.project.id,
+            &hostname,
+        )
+        .await?;
         let sized = Sized {
             hostname,
             memory_limit,
@@ -105,7 +112,7 @@ impl CreateStore<'_> {
 
     async fn derived(&self, database: &SqliteDatabase) -> Option<String> {
         let domain = crate::infra::node::settings::domain(database).await;
-        let suffix = crate::infra::repositories::project_domain::domain_for(
+        let suffix = crate::infra::repositories::project_domain::public_domain_for(
             database,
             self.project,
             domain.as_deref(),

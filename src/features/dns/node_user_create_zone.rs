@@ -52,15 +52,10 @@ mod tests {
         crate::infra::network::ensure_self(database, &Config::default())
             .await
             .expect("this node");
-        let deployer = crate::infra::accounts::create_in(
-            database,
-            "deployer",
-            "a long passphrase here",
-            NodeRole::Member,
-            None,
-        )
-        .await
-        .expect("a member of this node");
+        let deployer =
+            crate::infra::accounts::create_in(database, "deployer", None, NodeRole::Member, None)
+                .await
+                .expect("a member of this node");
         let site = projects::create(database, "Site").await.expect("project");
         access::grant(database, &deployer.id, &site.id, ProjectRole::Deployer)
             .await
@@ -111,15 +106,10 @@ mod tests {
         crate::infra::network::ensure_self(database, &Config::default())
             .await
             .expect("this node");
-        let outsider = crate::infra::accounts::create_in(
-            database,
-            "outsider",
-            "a long passphrase here",
-            NodeRole::Member,
-            None,
-        )
-        .await
-        .expect("a member of this node");
+        let outsider =
+            crate::infra::accounts::create_in(database, "outsider", None, NodeRole::Member, None)
+                .await
+                .expect("a member of this node");
         let site = projects::create(database, "Site").await.expect("project");
 
         let refused = super::run(

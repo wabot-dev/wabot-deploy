@@ -380,10 +380,16 @@ impl ProjectRestController {
         let Some(account) = signed_in(&self.auth) else {
             return Ok(see_other("/sign-in"));
         };
+        let browser = crate::shell::auth::browser(&request);
         let form = match read_form(request).await {
             Ok(form) => form,
             Err(response) => return Ok(response),
         };
+        if let Err(reason) =
+            crate::shell::auth::proven(&self.state, &self.auth, &browser, &form).await
+        {
+            return Ok(back_with_error(&here, &reason));
+        }
 
         let minted = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {

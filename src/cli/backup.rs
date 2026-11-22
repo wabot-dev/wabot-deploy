@@ -259,6 +259,17 @@ pub async fn restore_node(
         );
     }
 
+    // **What was revoked after the backup is back.** A passkey removed, a
+    // device withdrawn or somebody signed out everywhere since then is a
+    // row the backup still holds. Sessions at least are ended, so nobody
+    // walks in on a cookie the restore made valid again.
+    let database = crate::infra::db::open(&config.database_path()).await?;
+    crate::infra::accounts::sessions::end_everyone(&database).await?;
+    database.close().await?;
+    println!("  sessions    ended; everyone signs in again");
+    println!("              a passkey removed or a device withdrawn since the backup is");
+    println!("              back — look at each account's devices");
+
     report_names(&config).await;
 
     // The download is consumed by now — the database is in place, the

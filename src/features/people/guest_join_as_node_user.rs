@@ -1,10 +1,14 @@
 use wabot::sqlite::SqliteDatabase;
 
-use crate::domain::entities::account::Account;
+use crate::features::access::signed_in_response::SignedInResponse;
+use crate::features::access::welcome_command::Welcome;
 use crate::features::people::join_request::JoinRequest;
-use crate::infra::accounts::invitations;
+use crate::infra::accounts::{ceremonies, invitations};
 
-pub async fn run(database: &SqliteDatabase, asked: &JoinRequest) -> Result<Account, String> {
+pub async fn run(
+    database: &SqliteDatabase,
+    asked: &JoinRequest,
+) -> Result<SignedInResponse, String> {
     let Some(invitation) = invitations::look_up(database, &asked.token)
         .await
         .map_err(|error| error.to_string())?
@@ -27,9 +31,33 @@ pub async fn run(database: &SqliteDatabase, asked: &JoinRequest) -> Result<Accou
         });
     }
 
-    invitations::accept(database, &asked.token, &asked.username, &asked.password)
-        .await
-        .map_err(|error| error.to_string())
+    let made = match asked.passkey.given() {
+        true => {
+            let rp = ceremonies::relying_party(&asked.browser.host)
+                .ok_or(ceremonies::NO_PASSKEYS_HERE)?;
+            let made = ceremonies::finish_registration(database, &rp, &asked.passkey, None).await?;
+            Some((rp, made))
+        }
+        false => None,
+    };
+    let account = invitations::accept(
+        database,
+        &asked.token,
+        &asked.username,
+        made.as_ref().map(|(_, made)| made.user_handle.as_str()),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    Welcome {
+        account: &account,
+        passkey: made.as_ref().map(|(rp, made)| (rp, made)),
+        browser: &asked.browser,
+        trust: made.is_some(),
+        news: false,
+    }
+    .run(database)
+    .await
 }
 
 #[cfg(test)]
@@ -64,7 +92,7 @@ mod tests {
             &JoinRequest {
                 token: invited.token.clone(),
                 username: "newcomer".into(),
-                password: "a long passphrase here".into(),
+                ..Default::default()
             },
         )
         .await
@@ -92,11 +120,15 @@ mod tests {
             &JoinRequest {
                 token: invited.token.clone(),
                 username: "newcomer".into(),
-                password: "a long passphrase here".into(),
+                ..Default::default()
             },
         )
         .await
         .expect("joined");
+        let born = crate::infra::accounts::sessions::lookup(&here.database, &born.session)
+            .await
+            .expect("read")
+            .expect("signed in");
         assert_eq!(born.tenant_id, None);
     }
 }

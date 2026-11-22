@@ -18,6 +18,7 @@ use crate::shell::state::ConsoleState;
 pub struct PeopleUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 #[ui_controller("/", app)]
@@ -52,6 +53,8 @@ impl PeopleUiController {
 
         // The account's language, around the render and no wider:
         // the strings are read here, and nothing awaits inside.
+        let verify =
+            crate::shell::auth::verify_prompt(&self.state, &self.auth, &self.asked.host).await;
         let page = crate::features::people::node_user_people_page::People {
             account: &account,
             people: &people,
@@ -59,6 +62,7 @@ impl PeopleUiController {
             projects: &projects,
             now,
             query_error: query.error.as_deref(),
+            verify: verify.as_ref(),
         };
         let body = crate::shell::texts::language::scoped(account.language, || {
             crate::features::people::node_user_people_page::render(&page)
@@ -82,7 +86,22 @@ impl PeopleUiController {
         let invitation = invitations::look_up(&self.state.database, &query.token).await?;
 
         layout::head("Join");
+        let passkey = match (
+            invitation.is_some(),
+            crate::infra::accounts::ceremonies::relying_party(&self.asked.host),
+        ) {
+            (true, Some(rp)) => Some(
+                crate::infra::accounts::ceremonies::begin_registration(
+                    &self.state.database,
+                    &rp,
+                    None,
+                )
+                .await?,
+            ),
+            _ => None,
+        };
         let page = crate::features::people::guest_join_page::Join {
+            passkey: passkey.as_ref(),
             heading: "Join this node",
             token: &query.token,
             invitation: invitation.as_ref(),

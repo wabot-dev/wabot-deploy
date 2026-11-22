@@ -28,6 +28,12 @@ impl AddServicePort<'_> {
                     return Err(crate::domain::values::hostname::WILDCARD_SHAPE.into());
                 }
                 let hostname = parsed.as_str().to_string();
+                crate::infra::repositories::project_domain::refuse_a_foreign_name(
+                    database,
+                    &self.service.project_id,
+                    &hostname,
+                )
+                .await?;
                 let probed = match parsed.wildcard_base() {
                     Some(base) => {
                         if self.asks_an_authority(database).await {
@@ -168,6 +174,76 @@ mod tests {
             !matches!(&outcome, Err(reason) if reason.contains("zone")),
             "{outcome:?}"
         );
+    }
+
+    async fn a_tenants_service(organisation_domain: Option<&str>) -> (SqliteDatabase, Service) {
+        use crate::infra::repositories::{projects, services, tenants};
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        crate::infra::node::settings::set_domain(&database, Some("node.example.com"))
+            .await
+            .expect("a domain");
+        let acme = tenants::create(&database, "Acme").await.expect("tenant");
+        tenants::set_domain(&database, &acme.id, organisation_domain)
+            .await
+            .expect("its domain");
+        let globex = tenants::create(&database, "Globex").await.expect("tenant");
+        tenants::set_domain(&database, &globex.id, Some("globex.com"))
+            .await
+            .expect("its domain");
+        let project = projects::create_for(&database, "shop", Some(&acme.id))
+            .await
+            .expect("project");
+        let service = services::create(
+            &database,
+            &project.id,
+            "web",
+            "docker.io/library/nginx:alpine",
+            &[],
+        )
+        .await
+        .expect("service");
+        (database, service)
+    }
+
+    async fn named(database: &SqliteDatabase, service: &Service, hostname: &str) -> String {
+        let asked = AddServicePortRequest {
+            container_port: 80,
+            https: true,
+            hostname: hostname.into(),
+            ..Default::default()
+        };
+        AddServicePort {
+            service,
+            asked: &asked,
+        }
+        .run(database)
+        .await
+        .err()
+        .unwrap_or_default()
+    }
+
+    /// A tenant's page under the node's domain is the same site as the
+    /// node's console, so `SameSite` stops nothing it posts there.
+    #[tokio::test]
+    async fn a_tenants_service_is_never_named_under_the_node_or_another_organisation() {
+        use crate::domain::policies::tenant_names::{UNDER_ANOTHER, UNDER_THE_NODE};
+        let (database, service) = a_tenants_service(Some("acme.com")).await;
+
+        assert_eq!(
+            named(&database, &service, "web.shop.node.example.com").await,
+            UNDER_THE_NODE
+        );
+        assert_eq!(
+            named(&database, &service, "login.globex.com").await,
+            UNDER_ANOTHER
+        );
+        for theirs in ["web.shop.acme.com", "shop.example.org"] {
+            let reason = named(&database, &service, theirs).await;
+            assert!(
+                reason != UNDER_THE_NODE && reason != UNDER_ANOTHER,
+                "{theirs}: {reason}"
+            );
+        }
     }
 
     #[tokio::test]

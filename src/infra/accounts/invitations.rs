@@ -212,7 +212,7 @@ pub async fn accept(
     database: &SqliteDatabase,
     token: &str,
     username: &str,
-    password: &str,
+    id: Option<&str>,
 ) -> AccountResult<Account> {
     let Some(invitation) = look_up(database, token).await? else {
         return Err(AccountError::Refused(
@@ -221,9 +221,8 @@ pub async fn accept(
     };
 
     // The account first: it is the step that can be refused for
-    // something the invitee can fix — a name taken, a password too
-    // short — and spending the invitation on those would cost them the
-    // link.
+    // something the invitee can fix — a name taken — and spending the
+    // invitation on that would cost them the link.
     // **In the frontier the invitation named**, which is the whole of
     // what this column exists for: before it, every account made here
     // was the node's own, so a tenant's console answered and nobody
@@ -231,7 +230,7 @@ pub async fn accept(
     let account = super::create_in(
         database,
         username,
-        password,
+        id,
         invitation.node_role,
         invitation.tenant_id.as_deref(),
     )
@@ -334,10 +333,9 @@ mod tests {
         let token = super::super::issue_setup_token(&database)
             .await
             .expect("token");
-        let admin =
-            super::super::create_admin(&database, &token, "admin", "a long passphrase here")
-                .await
-                .expect("admin");
+        let admin = super::super::create_admin(&database, &token, "admin", None)
+            .await
+            .expect("admin");
         (database, admin)
     }
 
@@ -348,7 +346,7 @@ mod tests {
             .await
             .expect("invited");
 
-        let account = accept(&database, &token, "jorge", "another long passphrase")
+        let account = accept(&database, &token, "jorge", None)
             .await
             .expect("accepted");
         assert_eq!(account.role, NodeRole::Member);
@@ -374,7 +372,7 @@ mod tests {
             .await
             .expect("invited");
 
-        let account = accept(&database, &token, "jorge", "another long passphrase")
+        let account = accept(&database, &token, "jorge", None)
             .await
             .expect("accepted");
 
@@ -410,7 +408,7 @@ mod tests {
         let token = create_into(&database, &admin, NodeRole::Admin, None, Some(&theirs.id))
             .await
             .expect("invited");
-        let theirs_admin = accept(&database, &token, "acme", "another long passphrase")
+        let theirs_admin = accept(&database, &token, "acme", None)
             .await
             .expect("accepted");
 
@@ -473,10 +471,10 @@ mod tests {
             .await
             .expect("invited");
 
-        accept(&database, &token, "first", "a long passphrase here")
+        accept(&database, &token, "first", None)
             .await
             .expect("accepted");
-        let error = accept(&database, &token, "second", "a long passphrase here")
+        let error = accept(&database, &token, "second", None)
             .await
             .expect_err("refused");
         assert!(error.to_string().contains("not valid"), "{error}");
@@ -524,7 +522,7 @@ mod tests {
         .await
         .expect("invited");
 
-        let account = accept(&database, &token, "jorge", "a long passphrase here")
+        let account = accept(&database, &token, "jorge", None)
             .await
             .expect("accepted");
 
@@ -543,7 +541,7 @@ mod tests {
         let token = create_into(&database, &admin, NodeRole::Member, None, None)
             .await
             .expect("invited");
-        let member = accept(&database, &token, "member", "a long passphrase here")
+        let member = accept(&database, &token, "member", None)
             .await
             .expect("accepted");
 
@@ -570,7 +568,7 @@ mod tests {
             .await
             .expect("invited");
 
-        accept(&database, &token, "admin", "a long passphrase here")
+        accept(&database, &token, "admin", None)
             .await
             .expect_err("the name is taken");
 
@@ -623,7 +621,7 @@ mod tests {
             .await
             .expect("invited");
 
-        accept(&database, &token, "jorge", "a long passphrase here")
+        accept(&database, &token, "jorge", None)
             .await
             .expect("accepted");
 
