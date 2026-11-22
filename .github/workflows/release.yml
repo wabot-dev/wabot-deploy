@@ -74,6 +74,26 @@ jobs:
           fi
           echo "version=$tag" >> "$GITHUB_ENV"
 
+      # **A beta is a pre-release, and its version is still `X.Y.Z`.** A
+      # tag whose message begins with "beta" is published as one: every
+      # node's updates page lists it and lets somebody install it, and
+      # none offers it. A suffix such as `-beta.1` would be a version no
+      # node before it can order, so they would not list it, and would
+      # take a peer running it for the oldest node there is. Promoting it
+      # is unticking the box on GitHub: the binary tried is the one
+      # shipped.
+      #
+      # Fetched again because `actions/checkout` brings a tag down as a
+      # lightweight one, and its message with it is lost.
+      - name: A beta or a release
+        run: |
+          git fetch --force --depth=1 origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          subject=$(git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents:subject)')
+          case "$subject" in
+            [Bb]eta*) echo "prerelease=true" >> "$GITHUB_ENV" ;;
+            *) echo "prerelease=false" >> "$GITHUB_ENV" ;;
+          esac
+
       # The same gate as `ci`, run again here rather than trusted from
       # a previous run: a tag can point at a commit CI never saw.
       - name: Check
@@ -127,6 +147,7 @@ jobs:
             dist/wabot-deploy-${{ env.version }}-x86_64-linux
             dist/wabot-deploy-${{ env.version }}-x86_64-linux.sha256
           generate_release_notes: true
+          prerelease: ${{ env.prerelease }}
           body: |
             One static binary for x86_64 Linux. No runtime dependencies:
             SQLite is compiled in, TLS is rustls, and there is no libc to
