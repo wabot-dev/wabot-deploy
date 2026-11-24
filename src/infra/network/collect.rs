@@ -331,7 +331,12 @@ async fn from_one(
     hand_over(database, node_id, &endpoint, &secret, trust).await;
 
     let waiting = match super::call::errands(&endpoint, &secret, trust).await {
-        Ok(waiting) => waiting,
+        Ok(waiting) => {
+            // The machine is up, whatever the tunnel to it is doing — which
+            // is what tells a stuck path from a node that is switched off.
+            super::repair::answered(node_id);
+            waiting
+        }
         Err(error) => {
             // Expected often enough not to be a warning: an authority
             // is a machine somewhere else, and this runs on a timer.
@@ -693,6 +698,9 @@ async fn report_for(
         // dial this one at all — on the internet neither has an endpoint,
         // and that has no answer.
         lan: Some(crate::infra::network::lan::addresses()),
+        // And where its WireGuard listens, which is part of that address
+        // now that a node behind NAT can move.
+        port: Some(super::port::own(database, config).await),
         // What this node is running, so a console elsewhere can say which
         // machine is behind — and so an instruction to catch up has
         // something to be compared against.

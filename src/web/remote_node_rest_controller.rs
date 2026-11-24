@@ -244,7 +244,7 @@ impl RemoteNodeRestController {
             return Ok(response);
         }
 
-        match crate::infra::network::roster::of_this_node(&self.database).await {
+        match crate::infra::network::roster::of_this_node(&self.database, &self.config).await {
             Ok(roster) => Ok(json(StatusCode::OK, &roster)),
             Err(error) => Ok(unreadable(error)),
         }
@@ -643,6 +643,24 @@ impl RemoteNodeRestController {
                 crate::infra::network::lan::remember(&self.database, &node, addresses).await
             {
                 tracing::warn!(%error, node = %node, "could not record a node's own addresses");
+            }
+        }
+        // And where its WireGuard listens. A node that moved is dialled at
+        // its new port from here only if the interface is told, and this is
+        // the one moment this side learns it.
+        if let Some(port) = report.port {
+            match crate::infra::network::port::remember(&self.database, &node, port).await {
+                Ok(true) => {
+                    if let Err(error) =
+                        crate::infra::network::tunnel::ensure(&self.database, &self.config).await
+                    {
+                        tracing::warn!(%error, node = %node, "could not dial a node at its new port");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, node = %node, "could not record a node's port")
+                }
             }
         }
         if let Err(error) = note_reachability(&self.database, &node, &report).await {

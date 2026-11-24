@@ -505,8 +505,25 @@ async fn nodes_this_one_cannot_reach(state: &Sources<'_>, concerns: &mut Vec<Con
     let Ok(nodes) = crate::infra::network::all(state.database).await else {
         return;
     };
+    // What the repair loop last did about each, so a tunnel that is being
+    // mended says how — a repair nobody can see is one nobody can trust.
+    // Within the hour, because a tunnel still dead is moved every five
+    // minutes, and an older line belongs to a stretch that already ended.
+    let repairs = crate::infra::network::repair::last(state.database)
+        .await
+        .unwrap_or_default();
+    let now = crate::infra::clock::now_ms();
+    let repaired = |node_id: &str| match repairs.get(node_id) {
+        Some(repair) if now - repair.at < 3_600_000 => format!(
+            "; {} {} min ago",
+            repair.did,
+            (now - repair.at).max(0) / 60_000
+        ),
+        _ => String::new(),
+    };
+    let held = crate::infra::network::lan::held();
 
-    for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface) {
+    for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface, &held) {
         use crate::infra::network::tunnel::Path;
         let go = format!("/nodes/{}/connections", paired.node_id);
         // Written out rather than through a variable: the guard below
@@ -517,8 +534,24 @@ async fn nodes_this_one_cannot_reach(state: &Sources<'_>, concerns: &mut Vec<Con
             Path::Dialling { at } => concerns.push(ConcernResponse {
                 weight: Weight::Wrong,
                 what: "A node this one cannot reach".into(),
+                why: format!(
+                    "configured at {at}, and it has never answered{}",
+                    repaired(&paired.node_id)
+                ),
                 which: paired.name,
-                why: format!("configured at {at}, and it has never answered"),
+                go,
+            }),
+            // node-0's 94 minutes on 2026-11-23, which no concern named.
+            Path::Stale { ago, at } => concerns.push(ConcernResponse {
+                weight: Weight::Wrong,
+                what: "A tunnel that stopped working".into(),
+                why: format!(
+                    "no handshake for {} min{}{}",
+                    ago / 60,
+                    at.map(|at| format!(", last from {at}")).unwrap_or_default(),
+                    repaired(&paired.node_id)
+                ),
+                which: paired.name,
                 go,
             }),
             Path::Nowhere => concerns.push(ConcernResponse {
@@ -588,6 +621,7 @@ mod tests {
             "A database is not archiving its log",
             "The disk is nearly full",
             "A node this one cannot reach",
+            "A tunnel that stopped working",
             "No way to reach a node",
             "Two nodes claim one address",
         ] {

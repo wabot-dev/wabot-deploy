@@ -509,12 +509,12 @@ happened:
 ## Things that are still open
 
 - Passkeys, trusted devices, approval from one, links and Activity
-  (`docs/access.md`) are written on the branch `access-passkeys` and have
-  run nowhere but the tests. The crates they need are published. Before
-  they ship: walk them on the VM with its CA trusted, and Jorge looks in
-  each browser. The release
-  signs everybody out once and deletes a password with its account's
-  first passkey — its notes have to say both.
+  (`docs/access.md`) are on `main` since 2026-11-23, merged from
+  `access-passkeys`, and have shipped only as the v0.46 betas; v0.46.0's
+  ceremonies held on real nodes. Before a release that is not a beta:
+  walk them on the VM with its CA trusted, and Jorge looks in each
+  browser. That release signs everybody out once and deletes a password
+  with its account's first passkey — its notes have to say both.
 - Reconcile checks whether a container runs, not whether its port
   mappings match the rows.
 - Images are collected per service, by number (`infra::deploy::surplus`,
@@ -563,11 +563,19 @@ happened:
 - `scripts/deploy.sh` prints `line 76: release: command not found` on
   every run. Harmless, and it is exactly where somebody looks when
   something is wrong.
-- `doctor` prints the overlay port from the config under a comment
-  promising what the kernel says. The peers below it are read from the
-  kernel; the port is not.
 - Health and failover across the upstreams of one name. Today a dead
   replica keeps its share of the traffic until the owner notices.
+- A tunnel that dies comes back (`docs/network.md`, phase 13, built
+  2026-11-23): `infra::network::repair` converges every thirty seconds,
+  redials a dead tunnel's next address, moves a node behind NAT to a new
+  port after three minutes while its authority still answers over HTTPS,
+  and the side that waits forgets a learned endpoint three minutes after
+  it went stale. The port travels with the report and the census
+  (`node.listen_port`), and a node moves only when every sibling on its
+  LAN has said its own. Run between the two VMs; not yet met on node-l1.
+  The forgetting, which is also the only cure for a dialler whose clock
+  went back, has run only in a test: the two VMs are one network, and on
+  its own network the waiting side judges nothing by age.
 - A copy here starts by another path than a copy elsewhere. Here,
   `Deployer::deploy` runs `deploy_one` straight from the owner's rows;
   elsewhere, `holders()` sends an `errand::Host` and that node's

@@ -56,6 +56,7 @@
 //! Configuring an endpoint on the public side would be guessing an
 //! address the NAT owns.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use defguard_wireguard_rs::{host::Host, key::Key, net::IpAddrMask, peer::Peer};
@@ -81,6 +82,15 @@ pub const DEFAULT_PORT: u16 = 51820;
 /// shortest UDP timeout worth worrying about.
 const KEEPALIVE: u16 = 25;
 
+/// How old a handshake may be on a tunnel that is working, where age means
+/// anything at all.
+///
+/// WireGuard's own `REJECT_AFTER_TIME`. A keepalive guarantees a packet
+/// every 25 seconds, the sender starts a new handshake 120 seconds into a
+/// session, and the keys are thrown away at 180 — so past this a tunnel
+/// with a keepalive has no keys, whatever the other end is doing.
+pub const STALE_AFTER: u64 = 180;
+
 /// Bring the overlay to what the `node` table says it should be.
 ///
 /// `Ok(None)` when this node is not on an overlay at all — no address
@@ -89,6 +99,38 @@ const KEEPALIVE: u16 = 25;
 /// there: an interface for a network of one is a network interface
 /// nothing will ever send a packet to.
 pub async fn ensure(database: &SqliteDatabase, config: &Config) -> NetworkResult<Option<Overlay>> {
+    let ensured = converge(database, config, &BTreeSet::new()).await?;
+    // The case the module note is about, and worth a line: somebody
+    // reading a deployment's journal should be able to see that the
+    // overlay was left alone rather than infer it from silence. Here and
+    // not in `converge`, which the repair loop calls every thirty seconds.
+    if let Some((_, Outcome::Nothing)) = &ensured {
+        tracing::info!("the overlay interface already matches");
+    }
+    Ok(ensured.map(|(overlay, _)| overlay))
+}
+
+/// [`ensure`], stepping past the address the kernel holds for each peer
+/// named in `away` when its name has another.
+///
+/// For the repair loop: a dialled peer whose path died is tried at the
+/// next address its name resolves to — an `AAAA` on a machine whose IPv6
+/// is broken is the case — while every other peer keeps the address it
+/// has, so a name whose answers come back in a different order does not
+/// move a tunnel that works.
+pub async fn converge(
+    database: &SqliteDatabase,
+    config: &Config,
+    away: &BTreeSet<String>,
+) -> NetworkResult<Option<(Overlay, Outcome)>> {
+    // One at a time. The census, an edge errand and the repair loop all
+    // call this, and two read-compare-write passes interleaved can each
+    // undo what the other just wrote.
+    let _one = ENSURING
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
     let Some(me) = super::me(database).await? else {
         return Ok(None);
     };
@@ -97,12 +139,17 @@ pub async fn ensure(database: &SqliteDatabase, config: &Config) -> NetworkResult
         return Ok(None);
     };
 
-    let peers = peers(database, config, &me).await?;
+    let port = super::port::own(database, config).await;
+    let steer = Steer {
+        held: endpoints_held(),
+        away: away.clone(),
+    };
+    let peers = peers(database, config, &me, &steer).await?;
     let overlay = Overlay {
         // With the mask, because that is what the interface carries and
         // what somebody comparing it against `ip addr` will see.
         address: interface_address(&address),
-        port: config.overlay.port,
+        port,
         peers: peers.len(),
     };
 
@@ -110,10 +157,49 @@ pub async fn ensure(database: &SqliteDatabase, config: &Config) -> NetworkResult
     // machine. Everything below touches the kernel, and on a node where
     // that is refused the rest of the node must keep working — the
     // console is where somebody goes to find out why.
-    if let Err(error) = apply(&address, &private, config.overlay.port, peers) {
-        return Err(NetworkError::Refused(error));
+    match apply(&address, &private, port, peers) {
+        Ok(outcome) => Ok(Some((overlay, outcome))),
+        Err(error) => Err(NetworkError::Refused(error)),
     }
-    Ok(Some(overlay))
+}
+
+static ENSURING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// What a pass told the kernel.
+// Only Linux has a kernel to tell, so elsewhere only `Nothing` is named.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Nothing,
+    Peers,
+    Rebuilt,
+}
+
+/// What the kernel already holds, and which peers to step past.
+#[derive(Debug, Default)]
+struct Steer {
+    /// The endpoint the kernel has for each peer, by public key.
+    held: BTreeMap<String, SocketAddr>,
+    away: BTreeSet<String>,
+}
+
+/// Where the kernel is sending each peer's packets now, by public key.
+///
+/// Empty under a test, which must not read the machine it runs on: as root
+/// on the VM node this would be the node's own interface.
+fn endpoints_held() -> BTreeMap<String, SocketAddr> {
+    if cfg!(test) {
+        return BTreeMap::new();
+    }
+    observed()
+        .map(|interface| {
+            interface
+                .peers
+                .into_iter()
+                .filter_map(|peer| Some((peer.public_key, peer.endpoint?.parse().ok()?)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What came up, for a caller that has to report it.
@@ -129,13 +215,19 @@ pub struct Overlay {
 /// A node with no key or no address is one that has not finished
 /// joining. It is skipped rather than refused: the row is legitimate,
 /// it is simply not something WireGuard can be told about yet.
-async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> NetworkResult<Vec<Peer>> {
+async fn peers(
+    database: &SqliteDatabase,
+    config: &Config,
+    me: &Node,
+    steer: &Steer,
+) -> NetworkResult<Vec<Peer>> {
     let mut peers = Vec::new();
     // Read once for the whole list rather than per peer: this runs at
     // every change, and one of the two is a walk of the kernel's
     // interfaces.
     let lan = super::lan::of_every_node(database).await?;
     let mine = super::lan::held();
+    let ports = super::port::of_every_node(database).await?;
 
     for node in super::all(database).await? {
         if node.id == me.id {
@@ -172,9 +264,17 @@ async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> Network
         // restart it ever did.
         peer.persistent_keepalive_interval = Some(0);
 
+        // **At the port that node said**, and this node's own configured
+        // port only for a node that has never said, which is an older one.
+        // Never this node's *moved* port: that is where this node listens,
+        // and says nothing about anybody else.
+        let port = ports.get(&node.id).copied().unwrap_or(config.overlay.port);
+
         // Only towards a node this one can dial. See the module docs:
         // the other direction is learned from the handshake.
-        if let Some(endpoint) = overlay_endpoint(&node, config).await {
+        let held = steer.held.get(public_key);
+        let away = steer.away.contains(public_key);
+        if let Some(endpoint) = overlay_endpoint(&node, port, held, away).await {
             peer.endpoint = Some(endpoint);
             peer.persistent_keepalive_interval = Some(KEEPALIVE);
         } else if let Some(address) = lan_endpoint(&node, &lan, &mine) {
@@ -191,7 +291,7 @@ async fn peers(database: &SqliteDatabase, config: &Config, me: &Node) -> Network
             // addresses; with no keepalive and no traffic, nothing is sent
             // at all, and what somebody sees is a peer that has never
             // shaken hands.
-            peer.endpoint = Some(SocketAddr::new(address.into(), config.overlay.port));
+            peer.endpoint = Some(SocketAddr::new(address.into(), port));
         }
         peers.push(peer);
     }
@@ -216,25 +316,74 @@ fn lan_endpoint(
 
 /// Where to send this peer's packets, if anywhere.
 ///
-/// The host comes from the control-plane endpoint and the port from the
-/// config, because they are different ports on the same machine — the
-/// console answers TCP 443, WireGuard answers UDP 51820. Resolved here
-/// rather than stored, so a node whose address changes is reached at
-/// the new one on the next start without anybody editing a row.
-async fn overlay_endpoint(node: &Node, config: &Config) -> Option<SocketAddr> {
+/// The host comes from the control-plane endpoint and the port from what
+/// that node said it listens on, because they are different ports on the
+/// same machine — the console answers TCP 443, WireGuard answers UDP 51820
+/// or wherever it moved. Resolved here rather than stored, so a node whose
+/// address changes is reached at the new one on the next pass without
+/// anybody editing a row.
+async fn overlay_endpoint(
+    node: &Node,
+    port: u16,
+    held: Option<&SocketAddr>,
+    away: bool,
+) -> Option<SocketAddr> {
     let endpoint = node.endpoint.as_deref()?;
     // `host:port`, and the port is the control plane's — dropped.
     let host = endpoint.rsplit_once(':').map(|(host, _)| host)?;
 
-    match tokio::net::lookup_host((host, config.overlay.port)).await {
-        Ok(mut addresses) => addresses.next(),
+    match tokio::net::lookup_host((host, port)).await {
+        Ok(addresses) => {
+            resolved(&node.id, None);
+            choose(&addresses.collect::<Vec<_>>(), held, away)
+        }
         Err(error) => {
             // Not fatal: the peer is configured without an endpoint and
             // the tunnel still comes up if *it* dials us. A node whose
             // DNS is briefly broken should not take the overlay down.
-            tracing::warn!(%error, node = %node.id, "could not resolve a peer's address");
+            resolved(&node.id, Some(&error));
             None
         }
+    }
+}
+
+/// Which of a name's addresses to dial.
+///
+/// The one the kernel already holds while the name still gives it, so a
+/// resolver that answers in a different order each time does not move a
+/// tunnel that works; the one after it when the repair loop says that one
+/// is dead; the first otherwise, which is the address that moved.
+fn choose(addresses: &[SocketAddr], held: Option<&SocketAddr>, away: bool) -> Option<SocketAddr> {
+    let mut unique: Vec<SocketAddr> = Vec::new();
+    for address in addresses {
+        if !unique.contains(address) {
+            unique.push(*address);
+        }
+    }
+    match held.and_then(|held| unique.iter().position(|address| address == held)) {
+        Some(at) if away => unique.get((at + 1) % unique.len()).copied(),
+        Some(at) => unique.get(at).copied(),
+        None => unique.first().copied(),
+    }
+}
+
+/// Say a name stopped resolving once, and that it came back once.
+///
+/// The repair loop resolves every dialled name every thirty seconds, so a
+/// warning per pass would bury the journal under one fact — and node-0
+/// holds a node whose name resolves nowhere at all.
+fn resolved(node: &str, error: Option<&std::io::Error>) {
+    static FAILING: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+    let Ok(mut failing) = FAILING.lock() else {
+        return;
+    };
+    match error {
+        Some(error) if failing.insert(node.to_string()) => {
+            tracing::warn!(%error, node, "could not resolve a peer's address")
+        }
+        Some(error) => tracing::debug!(%error, node, "still cannot resolve a peer's address"),
+        None if failing.remove(node) => tracing::info!(node, "a peer's address resolves again"),
+        None => {}
     }
 }
 
@@ -445,7 +594,7 @@ fn difference(existing: &Peer, wanted: &Peer) -> Option<&'static str> {
 /// 2026-11-14, where the only damage was a peer `doctor` could not
 /// explain.
 #[cfg(target_os = "linux")]
-fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<(), String> {
+fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<Outcome, String> {
     if cfg!(test) {
         return Err("a test does not touch the kernel".into());
     }
@@ -468,7 +617,7 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
     // is not configured, and `needed` reads that as "everything".
     let host = api.read_interface_data().ok();
 
-    match needed(host.as_ref(), private, port, &peers) {
+    let outcome = match needed(host.as_ref(), private, port, &peers) {
         Change::Everything(reason) => {
             // At `info`, once per start: whether a deployment costs the
             // overlay a minute of silence now depends on this line.
@@ -488,6 +637,7 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
                     mtu: None,
                     fwmark: None,
                 })
+                .map(|()| Outcome::Rebuilt)
                 .map_err(|error| format!("could not configure {INTERFACE}: {error}"));
         }
         Change::Peers { set, gone } => {
@@ -504,12 +654,10 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
                 removed = gone.len(),
                 "the overlay's peers changed"
             );
+            Outcome::Peers
         }
-        // The case the module note is about, and worth a line: somebody
-        // reading a deployment's journal should be able to see that the
-        // overlay was left alone rather than infer it from silence.
-        Change::Nothing => tracing::info!("the overlay interface already matches"),
-    }
+        Change::Nothing => Outcome::Nothing,
+    };
 
     // Whatever the peers needed, and last rather than first: the address
     // is the one part of this the kernel cannot be asked about — `Host`
@@ -518,7 +666,36 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
     // it instead of adding a second one, which is why doing this on every
     // start is not the thing the module note warns about.
     api.assign_address(&wanted)
+        .map(|()| outcome)
         .map_err(|error| format!("could not address {INTERFACE}: {error}"))
+}
+
+/// Drop these peers, so the next [`converge`] adds them back with no
+/// endpoint.
+///
+/// WireGuard has no other way to clear an endpoint it learned, and no
+/// other way to forget the last timestamp it accepted from a key — which is
+/// the only cure for a dialler whose clock went back. Only ever asked for a
+/// peer whose session is already gone.
+#[cfg(target_os = "linux")]
+pub fn forget(public_keys: &[String]) -> Result<(), String> {
+    if cfg!(test) {
+        return Err("a test does not touch the kernel".into());
+    }
+    let api = WGApi::<Kernel>::new(INTERFACE)
+        .map_err(|error| format!("could not open netlink: {error}"))?;
+    for public_key in public_keys {
+        let key = Key::try_from(public_key.as_str())
+            .map_err(|error| format!("{public_key} is not a key: {error}"))?;
+        api.remove_peer(&key)
+            .map_err(|error| format!("could not remove a peer: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn forget(_public_keys: &[String]) -> Result<(), String> {
+    Err("the overlay needs a Linux kernel".into())
 }
 
 /// The product is a Linux daemon. These exist so the crate still
@@ -526,7 +703,7 @@ fn apply(address: &str, private: &str, port: u16, peers: Vec<Peer>) -> Result<()
 /// written on, which is the same reason `install::restrict` has a
 /// second body. A node that reaches these has no kernel to ask.
 #[cfg(not(target_os = "linux"))]
-fn apply(_address: &str, _private: &str, _port: u16, _peers: Vec<Peer>) -> Result<(), String> {
+fn apply(_address: &str, _private: &str, _port: u16, _peers: Vec<Peer>) -> Result<Outcome, String> {
     Err("the overlay needs a Linux kernel".into())
 }
 
@@ -644,7 +821,17 @@ pub struct Paired {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Path {
     /// Packets move: a handshake completed this long ago, at this address.
+    ///
+    /// Or nothing has needed to: a pair with no keepalive on either side —
+    /// two nodes on one LAN — may be quiet for hours with nothing wrong.
     Session { ago: u64, at: Option<String> },
+    /// A tunnel with a keepalive whose last handshake is older than
+    /// [`STALE_AFTER`]: it has no keys, so nothing crosses it.
+    ///
+    /// **It used to read as a session.** node-0 held node-l1 like this for
+    /// 94 minutes on 2026-11-23, its page said "Quiet" and nothing raised a
+    /// concern, because a handshake of any age was a `Session`.
+    Stale { ago: u64, at: Option<String> },
     /// This node set an endpoint and has never been answered. A fault: we
     /// think we can reach it, and cannot.
     Dialling { at: String },
@@ -675,7 +862,15 @@ pub enum Path {
 /// in the same position has no path at all, which is the state the
 /// operator has agreed to live with and the one that must not look like a
 /// fault.
-pub fn pair(me: &Node, nodes: &[Node], interface: &Interface) -> Vec<Paired> {
+///
+/// `held` is this machine's own addresses, which say whether a handshake's
+/// age means anything — see [`judged_by_age`].
+pub fn pair(
+    me: &Node,
+    nodes: &[Node],
+    interface: &Interface,
+    held: &[super::lan::Held],
+) -> Vec<Paired> {
     let mut paired = Vec::new();
     let mut explained: Vec<String> = Vec::new();
 
@@ -699,10 +894,14 @@ pub fn pair(me: &Node, nodes: &[Node], interface: &Interface) -> Vec<Paired> {
         // to be asked about what this node *intended*. That is what keeps
         // this cheap enough for a page render: one netlink read.
         let path = match seen {
-            Some(peer) if peer.live() => Path::Session {
-                ago: now_seconds().saturating_sub(peer.last_handshake.unwrap_or_default()),
-                at: peer.endpoint.clone(),
-            },
+            Some(peer) if peer.live() => {
+                let ago = now_seconds().saturating_sub(peer.last_handshake.unwrap_or_default());
+                let at = peer.endpoint.clone();
+                match ago > STALE_AFTER && judged_by_age(peer, held) {
+                    true => Path::Stale { ago, at },
+                    false => Path::Session { ago, at },
+                }
+            }
             Some(peer) if peer.endpoint.is_some() => Path::Dialling {
                 at: peer.endpoint.clone().unwrap_or_default(),
             },
@@ -734,6 +933,32 @@ pub fn pair(me: &Node, nodes: &[Node], interface: &Interface) -> Vec<Paired> {
     paired
 }
 
+/// Whether this peer's handshake has to be fresh while the tunnel works.
+///
+/// It does when either side sends a keepalive. This side's is in the
+/// kernel. The other side's is not, and it is read off where its packets
+/// came from: an endpoint this node did not configure is one it learned,
+/// and a learned endpoint off this machine's own networks came across the
+/// internet — which no node dials without a keepalive, because there is a
+/// translation to hold open. A pair on one LAN sends none, and is judged
+/// only by never having answered.
+pub fn judged_by_age(peer: &Handshake, held: &[super::lan::Held]) -> bool {
+    if peer.keepalive > 0 {
+        return true;
+    }
+    let Some(from) = peer
+        .endpoint
+        .as_deref()
+        .and_then(|endpoint| endpoint.parse::<SocketAddr>().ok())
+    else {
+        return false;
+    };
+    match from.ip() {
+        std::net::IpAddr::V4(address) => super::lan::candidate(&[address], held).is_none(),
+        std::net::IpAddr::V6(_) => true,
+    }
+}
+
 /// What is happening between this node and each of the others, read
 /// now: the kernel's peers crossed with the rows.
 ///
@@ -748,7 +973,7 @@ pub async fn paths(database: &SqliteDatabase) -> Result<Vec<Paired>, String> {
     let nodes = crate::infra::network::all(database)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(pair(&me, &nodes, &interface))
+    Ok(pair(&me, &nodes, &interface, &super::lan::held()))
 }
 
 fn now_seconds() -> u64 {
@@ -876,7 +1101,9 @@ mod tests {
         .await
         .expect("row");
 
-        let wanted = peers(&database, &config, &me).await.expect("peers");
+        let wanted = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
         let peer = wanted.first().expect("one peer");
         assert_eq!(peer.persistent_keepalive_interval, Some(0));
 
@@ -1143,7 +1370,9 @@ mod tests {
             .expect("save");
         }
 
-        let peers = peers(&database, &config, &me).await.expect("peers");
+        let peers = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
         assert_eq!(peers.len(), 2);
 
         let dialled: Vec<&Peer> = peers.iter().filter(|p| p.endpoint.is_some()).collect();
@@ -1208,19 +1437,19 @@ mod tests {
         };
         let them = vec![node("nd-them", Some("theirs"))];
         assert_eq!(
-            pair(&public, &them, &quiet)[0].path,
+            pair(&public, &them, &quiet, &[])[0].path,
             Path::Waiting,
             "a public node holding a private peer is right to wait"
         );
         assert_eq!(
-            pair(&private, &them, &quiet)[0].path,
+            pair(&private, &them, &quiet, &[])[0].path,
             Path::Nowhere,
             "two private nodes with nowhere to dial have no path, and it has to be said"
         );
 
         // A row that has not finished joining is neither.
         assert_eq!(
-            pair(&private, &[node("nd-half", None)], &quiet)[0].path,
+            pair(&private, &[node("nd-half", None)], &quiet, &[])[0].path,
             Path::NotOnTheOverlay
         );
 
@@ -1238,7 +1467,7 @@ mod tests {
             }],
         };
         assert_eq!(
-            pair(&private, &[], &stranger)[0].path,
+            pair(&private, &[], &stranger, &[])[0].path,
             Path::Unexplained {
                 public_key: "somebody".into()
             }
@@ -1257,13 +1486,91 @@ mod tests {
                 rx_bytes: 1,
             }],
         };
-        match &pair(&private, &them, &talking)[0].path {
+        match &pair(&private, &them, &talking, &[])[0].path {
             Path::Session { ago, at } => {
                 assert!(*ago <= 31, "{ago}");
                 assert_eq!(at.as_deref(), Some("203.0.113.9:51820"));
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The one node-0 lived in for 94 minutes on 2026-11-23: a handshake
+    /// four minutes old on a tunnel that has a keepalive, read as a
+    /// session because it had a handshake at all.
+    ///
+    /// And the two it must not catch. A pair on one LAN sends no
+    /// keepalive and may be quiet for hours; a peer that dials this one
+    /// from across the internet has a keepalive on *its* side, which is
+    /// read off the address it came from.
+    #[test]
+    fn a_tunnel_with_a_keepalive_and_an_old_handshake_is_stale() {
+        let me = Node {
+            update_note: None,
+            version: None,
+            wanted_version: None,
+            usage: None,
+            draining_at: None,
+            capacity: None,
+            id: "nd-me".into(),
+            name: "me".into(),
+            kind: super::super::Kind::Private,
+            endpoint: None,
+            public_key: Some("mine".into()),
+            overlay_ip: Some("10.42.0.2".into()),
+            is_self: true,
+            last_seen_at: None,
+            allows: Vec::new(),
+            ca_pem: None,
+        };
+        let them = vec![Node {
+            id: "nd-them".into(),
+            name: "them".into(),
+            public_key: Some("theirs".into()),
+            overlay_ip: Some("10.42.0.1".into()),
+            is_self: false,
+            ..me.clone()
+        }];
+        let lan = [super::super::lan::Held {
+            address: "192.168.1.202".parse().expect("an address"),
+            mask: "255.255.255.0".parse().expect("a mask"),
+        }];
+        let seen = |keepalive: u16, endpoint: &str, ago: u64| Interface {
+            port: 51820,
+            peers: vec![Handshake {
+                keepalive,
+                allowed_ips: Vec::new(),
+                public_key: "theirs".into(),
+                endpoint: Some(endpoint.into()),
+                last_handshake: Some(now_seconds() - ago),
+                tx_bytes: 1,
+                rx_bytes: 1,
+            }],
+        };
+        let path = |interface: &Interface| pair(&me, &them, interface, &lan)[0].path.clone();
+
+        assert!(matches!(
+            path(&seen(KEEPALIVE, "209.50.48.176:51820", 240)),
+            Path::Stale { .. }
+        ));
+        assert!(matches!(
+            path(&seen(KEEPALIVE, "209.50.48.176:51820", 60)),
+            Path::Session { .. }
+        ));
+        assert!(
+            matches!(
+                path(&seen(0, "45.238.144.77:1024", 240)),
+                Path::Stale { .. }
+            ),
+            "learned from the internet: that side dials with a keepalive"
+        );
+        assert!(
+            matches!(
+                path(&seen(0, "192.168.1.55:51820", 7200)),
+                Path::Session { .. }
+            ),
+            "a pair on one LAN may be quiet for hours"
+        );
     }
 
     /// A private peer on this machine's own network is dialled at its LAN
@@ -1330,7 +1637,9 @@ mod tests {
             .await
             .expect("its addresses");
 
-        let peers = peers(&database, &config, &me).await.expect("peers");
+        let peers = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
         let sibling = peers.first().expect("one peer");
 
         match on_my_network.is_empty() {
@@ -1401,7 +1710,9 @@ mod tests {
             .await
             .expect("its addresses");
 
-        let peers = peers(&database, &config, &me).await.expect("peers");
+        let peers = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
         assert!(
             peers.first().expect("one peer").endpoint.is_none(),
             "the tunnel was pointed at an address inside itself"
@@ -1442,7 +1753,9 @@ mod tests {
         .await
         .expect("save");
 
-        let peers = peers(&database, &config, &me).await.expect("peers");
+        let peers = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
         assert_eq!(peers[0].allowed_ips.len(), 1);
         assert_eq!(peers[0].allowed_ips[0].to_string(), "10.42.0.1/32");
     }
@@ -1492,9 +1805,98 @@ mod tests {
             .expect("save");
         }
 
-        assert!(peers(&database, &config, &me)
+        assert!(peers(&database, &config, &me, &Steer::default())
             .await
             .expect("peers")
             .is_empty());
+    }
+
+    /// Two nodes configured with different `overlay.port`s dialled each
+    /// other at their own and never met; and a node that moved would be
+    /// dialled at the port it left. A peer is dialled at the port it said,
+    /// and at this node's configured one only when it has said nothing —
+    /// never at a port this node moved to, which says where *this* node
+    /// listens.
+    #[tokio::test]
+    async fn a_peer_is_dialled_at_the_port_it_said() {
+        let database = crate::infra::db::open_in_memory().await.expect("open");
+        let config = Config::default();
+        let me = super::super::ensure_self(&database, &config)
+            .await
+            .expect("seeded");
+        super::super::port::move_to(&database, 60001)
+            .await
+            .expect("moved");
+
+        for id in ["nd-said", "nd-silent"] {
+            super::super::save(
+                &database,
+                &Node {
+                    update_note: None,
+                    version: None,
+                    wanted_version: None,
+                    usage: None,
+                    draining_at: None,
+                    capacity: None,
+                    id: id.into(),
+                    name: id.into(),
+                    kind: super::super::Kind::Public,
+                    endpoint: Some("localhost:443".into()),
+                    public_key: Some(Key::generate().public_key().to_string()),
+                    overlay_ip: Some(match id {
+                        "nd-said" => "10.42.0.1".into(),
+                        _ => "10.42.0.3".into(),
+                    }),
+                    is_self: false,
+                    last_seen_at: None,
+                    allows: Vec::new(),
+                    ca_pem: None,
+                },
+            )
+            .await
+            .expect("save");
+        }
+        super::super::port::remember(&database, "nd-said", 53122)
+            .await
+            .expect("its port");
+
+        let rows = super::super::all(&database).await.expect("rows");
+        let key_of = |id: &str| {
+            rows.iter()
+                .find(|node| node.id == id)
+                .and_then(|node| node.public_key.clone())
+                .expect("a key")
+        };
+        let peers = peers(&database, &config, &me, &Steer::default())
+            .await
+            .expect("peers");
+        let port_of = |id: &str| {
+            peers
+                .iter()
+                .find(|peer| peer.public_key.to_string() == key_of(id))
+                .and_then(|peer| peer.endpoint)
+                .map(|endpoint| endpoint.port())
+        };
+
+        assert_eq!(port_of("nd-said"), Some(53122));
+        assert_eq!(port_of("nd-silent"), Some(config.overlay.port));
+    }
+
+    /// A resolver that answers in a different order must not move a
+    /// tunnel that works, and a tunnel that died is tried at the next
+    /// address — the `AAAA` on a machine whose IPv6 is broken.
+    #[test]
+    fn a_dead_address_gives_way_to_the_next_and_a_working_one_stays() {
+        let v6: SocketAddr = "[2001:db8::1]:51820".parse().expect("v6");
+        let v4: SocketAddr = "203.0.113.1:51820".parse().expect("v4");
+        let moved: SocketAddr = "203.0.113.2:51820".parse().expect("moved");
+
+        assert_eq!(choose(&[v6, v4], None, false), Some(v6));
+        assert_eq!(choose(&[v6, v4], Some(&v4), false), Some(v4));
+        assert_eq!(choose(&[v6, v4], Some(&v6), true), Some(v4));
+        assert_eq!(choose(&[v6, v4], Some(&v4), true), Some(v6));
+        assert_eq!(choose(&[v4], Some(&v4), true), Some(v4));
+        assert_eq!(choose(&[moved], Some(&v4), false), Some(moved));
+        assert_eq!(choose(&[], Some(&v4), true), None);
     }
 }

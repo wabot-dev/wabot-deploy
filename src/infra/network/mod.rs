@@ -43,6 +43,8 @@ pub mod join;
 pub mod keys;
 pub mod lan;
 pub mod overlay;
+pub mod port;
+pub mod repair;
 pub mod roster;
 pub mod token;
 pub mod tunnel;

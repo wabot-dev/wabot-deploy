@@ -33,6 +33,7 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("Joined", "Unido"),
     ("Last handshake", "Último handshake"),
     ("Last report", "Último reporte"),
+    ("Lost", "Perdido"),
     ("May", "Puede"),
     ("Memory a service may take is also reserved for it, and this node refuses to promise more than it has. CPU may be promised beyond it: services share the cores, and together never take what the node keeps for itself — the console, the edge, containerd.", "La memoria que un servicio puede llevarse también se le reserva, y este nodo se niega a prometer más de la que tiene. La CPU sí se puede prometer de más: los servicios comparten los núcleos, y juntos nunca toman lo que el nodo guarda para sí — la consola, el edge, containerd."),
     ("Moves the copies this node put there to somewhere with room, and stops choosing it for new ones. Copies that arrived from another node are not this one's to move; a database copy that accepts writes is named rather than moved, because promoting is a decision somebody makes.", "Mueve las copias que este nodo puso allí a algún sitio con espacio, y deja de elegirlo para las nuevas. Las copias que llegaron de otro nodo no son de este para moverlas; una copia de base de datos que acepta escrituras se nombra en vez de moverse, porque promover es una decisión que toma alguien."),

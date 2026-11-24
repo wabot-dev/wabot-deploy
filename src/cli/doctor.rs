@@ -664,13 +664,13 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         }
         Err(error) => {
             // Not counted: a node on no overlay has no interface, and
-            // saying so is not the same as something being wrong. The
-            // configured port is what there is to say here — it is what
-            // this node would listen on, and nothing is listening.
+            // saying so is not the same as something being wrong. Where
+            // this node would listen is what there is to say here: the
+            // port it moved to, or the file's if it never has.
             println!(
-                "  interface   {} would be udp/{} (from the file)",
+                "  interface   {} would be udp/{}",
                 crate::infra::network::tunnel::INTERFACE,
-                config.overlay.port
+                crate::infra::network::port::own(&database, &config).await
             );
             println!("  not up: {error}");
         }
@@ -748,13 +748,26 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
         let nodes = crate::infra::network::all(&database)
             .await
             .unwrap_or_default();
-        for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface) {
+        let repairs = crate::infra::network::repair::last(&database)
+            .await
+            .unwrap_or_default();
+        let held = crate::infra::network::lan::held();
+        for paired in crate::infra::network::tunnel::pair(&me, &nodes, &interface, &held) {
             use crate::infra::network::tunnel::Path;
             let said = match &paired.path {
                 Path::Session { ago, at } => match at {
                     Some(at) => format!("session {ago}s ago, via {at}"),
                     None => format!("session {ago}s ago"),
                 },
+                // A keepalive and no keys: the tunnel node-0 called a
+                // session for 94 minutes on 2026-11-23.
+                Path::Stale { ago, at } => {
+                    problems += 1;
+                    match at {
+                        Some(at) => format!("STALE — last handshake {ago}s ago, via {at}"),
+                        None => format!("STALE — last handshake {ago}s ago"),
+                    }
+                }
                 // The one that is a fault: this node thinks it can
                 // reach that one, and never has.
                 Path::Dialling { at } => {
@@ -775,6 +788,15 @@ pub async fn run(config: Config, config_path: &Path) -> anyhow::Result<i32> {
             match paired.name.is_empty() {
                 true => println!("  path        {said}"),
                 false => println!("  path        {} — {said}", paired.name),
+            }
+            // And what the repair loop last did about it, which is the
+            // other half of the answer when the path is not a session.
+            if let Some(repair) = repairs.get(&paired.node_id) {
+                println!(
+                    "              repair    {}, {}s ago",
+                    repair.did,
+                    (now_ms() - repair.at).max(0) / 1000
+                );
             }
         }
     }

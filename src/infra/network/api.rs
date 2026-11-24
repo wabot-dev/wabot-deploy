@@ -268,6 +268,15 @@ pub struct Report {
     /// clears what was stored — the same rule `allows` follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan: Option<Vec<String>>,
+    /// The port the reporting node's WireGuard listens on.
+    ///
+    /// Part of where that node is since phase 13: a node behind NAT moves
+    /// to a new port when its tunnel dies, and a sibling on its LAN dials it
+    /// at the port it said. `None` from an older node, which is dialled at
+    /// the reader's own configured port as before — and which, by saying
+    /// nothing, keeps every sibling that dials it from moving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// The reporting node's own certificate authority, in PEM.
     ///
     /// So the reader can dial it back over the overlay and verify what

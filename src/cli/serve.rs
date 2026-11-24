@@ -639,6 +639,14 @@ pub async fn run(config: Config) -> anyhow::Result<i32> {
                 )
             }
         })
+        // A tunnel that dies comes back: `docs/network.md`, phase 13. Its
+        // own loop rather than a step of the collector, which waits on an
+        // authority that may be the very thing the tunnel cannot reach.
+        .service_with_cancel("tunnel-repair", {
+            let database = errands_database.clone();
+            let config = errands_config.clone();
+            move |cancel| crate::infra::network::repair::loop_forever(database, config, cancel)
+        })
         // Certificates are obtained *beside* the listeners, never
         // before them: the HTTP-01 challenge is a request this node has
         // to answer, so ordering issuance ahead of the listener would

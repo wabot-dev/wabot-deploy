@@ -57,6 +57,17 @@ pub fn tunnel_words(path: Option<&Path>) -> (&'static str, &'static str, Option<
                 false => ("warning", t("Quiet"), Some(detail)),
             }
         }
+        // A tunnel with a keepalive and no keys: whatever crossed it has
+        // stopped. Said as a fault, because "Quiet" is what node-0 said for
+        // 94 minutes while node-l1 could not reach it.
+        Some(Path::Stale { ago, at }) => {
+            let when = layout::when(crate::shell::state::now_ms() - (*ago as i64) * 1000);
+            let detail = match at {
+                Some(at) => format!("{when} · {at}"),
+                None => when,
+            };
+            ("danger", t("Lost"), Some(detail))
+        }
         Some(Path::Dialling { at }) => ("danger", t("No answer"), Some(at.clone())),
         Some(Path::Waiting) => ("info", t("Waiting for it to dial in"), None),
         Some(Path::Nowhere) => ("warning", t("No path"), None),
@@ -223,14 +234,22 @@ mod tests {
         assert!(html.contains(r#"href="/nodes/nd-other""#), "{html}");
     }
 
-    /// The only fault among them is the one where this node believes it
-    /// can reach that one and never has.
+    /// The faults among them are a peer this node believes it can reach
+    /// and never has, and a tunnel with a keepalive whose keys are gone —
+    /// which this page called "Quiet" for the 94 minutes node-l1 could not
+    /// reach node-0.
     #[test]
-    fn only_a_peer_that_never_answered_is_red() {
+    fn only_a_tunnel_that_cannot_carry_anything_is_red() {
         let dialling = Path::Dialling {
             at: "203.0.113.9:51820".into(),
         };
+        let stale = Path::Stale {
+            ago: 240,
+            at: Some("45.238.144.77:51820".into()),
+        };
         assert_eq!(tunnel_words(Some(&dialling)).0, "danger");
+        assert_eq!(tunnel_words(Some(&stale)).0, "danger");
+        assert_eq!(tunnel_words(Some(&stale)).1, "Lost");
         for path in [Path::Waiting, Path::Nowhere, Path::NotOnTheOverlay] {
             assert_ne!(tunnel_words(Some(&path)).0, "danger", "{path:?}");
         }

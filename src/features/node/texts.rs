@@ -23,6 +23,10 @@ pub(crate) const TABLE: &[(&str, &str)] = &[
     ("A push holds its own bytes for a day, so an image pushed less than a day ago gives its disk back within the hour after its push is a day old.", "Un push retiene sus propios bytes durante un día, así que una imagen subida hace menos de un día devuelve su disco dentro de la hora siguiente a cumplir un día."),
     ("A store runs Garage, an engine published under the GNU AGPLv3, in a container of its own. Turning this on lets projects here make stores; turning it off stops none that exist, and refuses to start or make one.", "Un almacén corre Garage, un motor publicado bajo la GNU AGPLv3, en un contenedor propio. Activarlo deja que los proyectos de aquí creen almacenes; desactivarlo no detiene ninguno de los que existen, y se niega a arrancar o crear uno."),
     (
+        "A tunnel that stopped working",
+        "Un túnel que dejó de funcionar",
+    ),
+    (
         "An instruction was refused",
         "Una instrucción fue rechazada",
     ),

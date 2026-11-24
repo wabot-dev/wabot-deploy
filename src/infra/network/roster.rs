@@ -69,6 +69,11 @@ pub struct Member {
     /// only way either learns it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lan: Vec<String>,
+    /// The port that member's WireGuard listens on, as it said it. `None`
+    /// is a member older than the field, or one relayed by an authority
+    /// older than it — dialled at the reader's own port, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// The names that member answers DNS as, as it said them. `None` from
     /// an authority older than this, which changes nothing here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,7 +86,10 @@ pub struct Member {
 /// table. An authority may have joined somebody else, or learned a
 /// co-edge, and handing those out would leak a third network into this
 /// one. A node the operator forgot has no row and drops out on its own.
-pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
+pub async fn of_this_node(
+    database: &SqliteDatabase,
+    config: &crate::infra::config::Config,
+) -> NetworkResult<Roster> {
     let enrolled: Vec<String> = super::enrolment::all(database)
         .await?
         .into_iter()
@@ -108,8 +116,10 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
             })
             .collect();
     let mut named = crate::infra::dns::names::said_by_others(database).await?;
+    let mut ports = super::port::of_every_node(database).await?;
     if let Some(me) = super::me(database).await? {
         held.insert(me.id.clone(), super::lan::addresses());
+        ports.insert(me.id.clone(), super::port::own(database, config).await);
         named.insert(
             me.id,
             crate::infra::dns::names::of_this_node(database).await,
@@ -144,6 +154,7 @@ pub async fn of_this_node(database: &SqliteDatabase) -> NetworkResult<Roster> {
                 },
                 endpoint: node.endpoint.clone(),
                 lan: held.get(&node.id).cloned().unwrap_or_default(),
+                port: ports.get(&node.id).copied(),
                 name_servers: named.get(&node.id).cloned(),
             })
         })
@@ -211,6 +222,12 @@ pub async fn apply(database: &SqliteDatabase, roster: &Roster) -> NetworkResult<
             if renamed(database, member).await? {
                 applied.renamed += 1;
             }
+            // And its port, which is its own word like its names — and the
+            // one thing here a dialler of that authority needs. Two
+            // configured differently never met before it travelled.
+            if moved(database, member).await? {
+                applied.changed += 1;
+            }
             continue;
         }
         match holder_of(database, &member.overlay_ip).await? {
@@ -232,8 +249,20 @@ pub async fn apply(database: &SqliteDatabase, roster: &Roster) -> NetworkResult<
         if renamed(database, member).await? {
             applied.renamed += 1;
         }
+        // A sibling that moved is one this node dials at the old port until
+        // the interface is told, so a new port counts as a change.
+        if moved(database, member).await? {
+            applied.changed += 1;
+        }
     }
     Ok(applied)
+}
+
+async fn moved(database: &SqliteDatabase, member: &Member) -> NetworkResult<bool> {
+    match member.port {
+        Some(port) => Ok(super::port::remember(database, &member.node, port).await?),
+        None => Ok(false),
+    }
 }
 
 async fn renamed(database: &SqliteDatabase, member: &Member) -> NetworkResult<bool> {
@@ -429,7 +458,9 @@ mod tests {
     #[tokio::test]
     async fn a_roster_lists_the_nodes_this_one_enrolled_and_itself() {
         let database = network().await;
-        let roster = of_this_node(&database).await.expect("roster");
+        let roster = of_this_node(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("roster");
 
         let ids: Vec<String> = roster
             .members
@@ -461,7 +492,9 @@ mod tests {
     #[tokio::test]
     async fn a_roster_never_says_what_a_node_allows() {
         let database = network().await;
-        let roster = of_this_node(&database).await.expect("roster");
+        let roster = of_this_node(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("roster");
         let wire = serde_json::to_string(&roster).expect("serialise");
 
         assert!(!wire.contains("allows"), "{wire}");
@@ -500,6 +533,7 @@ mod tests {
             ca_pem: None,
             endpoint: Some("sibling.example.net:443".into()),
             lan: Vec::new(),
+            port: None,
             name_servers,
         };
 
@@ -534,7 +568,9 @@ mod tests {
             .expect("read");
         assert_eq!(said.get("nd-sibling01"), Some(&names));
 
-        let roster = of_this_node(&database).await.expect("roster");
+        let roster = of_this_node(&database, &crate::infra::config::Config::default())
+            .await
+            .expect("roster");
         let me = super::super::me(&database)
             .await
             .expect("query")
@@ -548,6 +584,64 @@ mod tests {
             mine.name_servers.as_deref(),
             Some(&["hub.example".to_string()][..]),
             "an authority says what it answers as, like any member"
+        );
+    }
+
+    /// The port travels like the addresses beside it: the authority hands
+    /// out what each member said and its own, and a member that hears a
+    /// sibling moved counts it as a change — which is what runs `ensure`,
+    /// so the sibling is dialled at its new port rather than the one it
+    /// left. Said again, it is not news.
+    #[tokio::test]
+    async fn a_port_travels_with_the_census_and_a_new_one_is_a_change() {
+        let database = network().await;
+        super::super::port::remember(&database, "nd-member01", 53122)
+            .await
+            .expect("as its report said");
+
+        let config = crate::infra::config::Config::default();
+        let roster = of_this_node(&database, &config).await.expect("roster");
+        let port_of = |id: &str| {
+            roster
+                .members
+                .iter()
+                .find(|member| member.node == id)
+                .and_then(|member| member.port)
+        };
+        assert_eq!(port_of("nd-member01"), Some(53122));
+        let me = super::super::me(&database)
+            .await
+            .expect("query")
+            .expect("self");
+        assert_eq!(port_of(&me.id), Some(config.overlay.port));
+
+        let sibling = |port| Roster {
+            members: vec![Member {
+                node: "nd-sibling02".into(),
+                name: "sibling".into(),
+                overlay_ip: "10.42.0.12".into(),
+                public_key: "dddd".into(),
+                ca_pem: None,
+                endpoint: None,
+                lan: Vec::new(),
+                port: Some(port),
+                name_servers: None,
+            }],
+        };
+        apply(&database, &sibling(51820)).await.expect("first");
+        assert_eq!(
+            apply(&database, &sibling(51820))
+                .await
+                .expect("again")
+                .changed,
+            0
+        );
+        assert_eq!(
+            apply(&database, &sibling(60002))
+                .await
+                .expect("moved")
+                .changed,
+            1
         );
     }
 
@@ -571,6 +665,7 @@ mod tests {
                     ca_pem: None,
                     endpoint: Some("elsewhere.example:443".into()),
                     lan: Vec::new(),
+                    port: None,
                     name_servers: None,
                 }],
             },
@@ -610,6 +705,7 @@ mod tests {
                     ca_pem: None,
                     endpoint: None,
                     lan: Vec::new(),
+                    port: None,
                     name_servers: None,
                 }],
             },
@@ -686,6 +782,7 @@ mod tests {
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("moved.example:443".into()),
                     lan: Vec::new(),
+                    port: None,
                     name_servers: None,
                 }],
             },
@@ -722,6 +819,7 @@ mod tests {
                     ca_pem: Some("the anchor".into()),
                     endpoint: Some("hub.example:443".into()),
                     lan: Vec::new(),
+                    port: None,
                     name_servers: None,
                 }],
             },
@@ -748,6 +846,7 @@ mod tests {
                 ca_pem: Some("anchor".into()),
                 endpoint: None,
                 lan: Vec::new(),
+                port: None,
                 name_servers: None,
             }],
         };

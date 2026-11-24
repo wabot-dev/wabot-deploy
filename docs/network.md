@@ -329,6 +329,7 @@ Still open:
 | 10 | The direction that had no path | An errand addressed to a node's own row, and to its authority | **done** |
 | 11 | Managed nodes | A node's version travels; another node may keep it up to date, restart it, back it up, and read its copies' logs. And a node may own nothing at all | **written** |
 | 12 | Groups | Health and failover across the upstreams of one name | |
+| 13 | Paths that come back | A tunnel that died is noticed, and repaired by the node that can repair it | **built** 2026-11-23 and run between the two VMs; not yet met on node-l1 |
 
 The table used to number Groups 10 while the prose below called the
 direction-with-no-path phase 10. The prose is what anybody cites, so the
@@ -1923,3 +1924,294 @@ gives it to the running server within fifteen minutes, without a restart.
 The name of the authority cannot be what changes, because every authority
 already minted keeps its own and a join token pins it.
 `docs/architecture.md` §10.22.
+
+## Phase 13: a tunnel that dies comes back — designed and built 2026-11-23
+
+Asked for by Jorge on 2026-11-23, after node-l1 lost node-0 for an
+afternoon and only a packet sent by hand brought it back: the overlay
+should recover from this kind of fault by itself. This section records what
+happened, what the router was measured to do, every way the tunnel can go
+down and whether anything brings it back today, and the design. Jorge
+agreed to it the same day, and "What was built" at the end says where the
+code went further than the design or differed from it.
+
+### What happened
+
+At 16:56 UTC node-l1's handshakes with node-0 stopped. node-l1 was up and
+kept sending. node-0 kept the endpoint it had learned, `45.238.144.77:51820`,
+and sent an initiation there every five seconds, because it always has
+something for `10.42.0.2`. For 94 minutes node-0's connections page said
+**Quiet** and its attention card said nothing. At 18:12 node-l1 was
+rebooted, which changed nothing, and its `doctor` then said `NEVER SHAKEN
+HANDS … DIALLING 209.50.48.176:51820`.
+
+Neither node has `tcpdump`, so packets were read on node-0 with an
+`AF_PACKET` socket in Python — `ETH_P_ALL`, or the outgoing ones are
+missed. node-0 received **nothing** from node-l1. Single UDP packets to
+node-0 narrowed it down:
+
+| From | Source port | To | Arrived |
+|---|---|---|---|
+| node-l1's WireGuard | 51820 | node-0:51820 | no |
+| node-l1, `nc` | ephemeral | node-0:51820 | yes |
+| the Mac, behind the same router | 51820 | node-0:51820 | no |
+| the Mac | 51821 | node-0:51820 | yes |
+| the Mac | 51820 | node-0:51821 | yes, from `:51820` |
+
+So the router dropped anything on that one pair of addresses and ports,
+from any machine behind it, and let everything else through. The last probe
+gave the router's external port 51820 to the Mac. node-0's next knock was
+forwarded there and answered with port unreachable, and two seconds later
+node-l1's initiation arrived from `:1024` and the tunnel came up. Until this
+phase exists, that probe is the workaround: `printf x | nc -u -w1 -p 51820
+<authority> 51821` from any machine behind the same router, or restarting
+the router.
+
+### What the router was measured to do
+
+From the Mac, against a UDP echo on node-0:
+
+| Mapping | Lifetime with nothing crossing it |
+|---|---|
+| New: one packet out, no reply | 5–10 s |
+| Established: both ways for 30 s | 150–240 s |
+| Established, with packets *arriving* every 10 s | never expired; still open at 270 s |
+
+The keepalive's 25 s sits well inside the established lifetime. And
+**packets arriving from outside keep a mapping alive**, so a public node
+knocking at a stale endpoint keeps whatever the router holds there for as
+long as it knocks.
+
+### And what it could not be made to do
+
+The fault was not reproduced. With a recorder on node-0, and a rule there
+dropping its packets to node-l1 while a mapping expired:
+
+| Provoked | Result |
+|---|---|
+| The mapping expires with both sides silent for 265 s | node-l1 back at once, from `:51820` |
+| The same, then node-0 knocks alone at `:51820` for 66 s before node-l1 returns | back at once |
+| node-l1 reassociates to the Wi-Fi (`iw dev wlan0 disconnect`) | the tunnel did not notice |
+
+So it is not "the mapping expired and the public node kept knocking". The
+state that blocked node-l1 appeared **during live traffic**, from the
+address that had been working — node-0 knew `:51820` to the end — and it
+survived node-l1's reboot. That fits a fast-path entry the router left
+stale. Four access points broadcast that network: the router on 2.4 and
+5 GHz, and another device on both. A roam is the likeliest trigger, and
+nothing on node-l1 recorded one before the reboot cleared its kernel log.
+
+**That changes which half of the fix matters.** The obvious repair was for
+the public node to stop knocking, so the router could forget. But the
+private node's own retries — every five seconds, on the same pair — can keep
+that state alive just as well, and that cannot be measured without the
+trigger. What *was* measured is that another source port goes through. So
+the half that does not depend on what a router does is the private node
+changing its port. The public node forgetting is hygiene, worth having for
+its own reasons below.
+
+### Every way the tunnel goes down, and what brings it back today
+
+Read off the code and the nodes on 2026-11-23.
+
+**Brought back by nothing but a restart:**
+
+| Cause | Why nothing recovers it | What would |
+|---|---|---|
+| A router holds stale state on the pair, as above | nothing changes the port | a new listen port |
+| **The node starts before its network.** `overlay_endpoint` cannot resolve the authority, logs it, and the peer is configured with no endpoint, so this node never dials | `ensure` runs again only when a census changes a row, and a census that says the same thing changes none | running `ensure` again |
+| The authority's address changes | its name is resolved only inside `ensure` | resolving it again |
+| `wabot0` is deleted or reset from outside — a test run as root reset it on the VM on 2026-11-14 | nothing recreates it | running `ensure` again |
+| The dialler's clock goes back. WireGuard refuses an initiation no newer than the last one it accepted from that key | silent until the clock passes that moment, which after a clock that had run ahead can be days | the responder removing the peer and adding it again, which forgets the timestamp |
+| Two nodes with different `overlay.port` | `overlay_endpoint` and `lan_endpoint` dial the other node at **this** node's port, so the two never meet | each node's port travelling with its row |
+| The authority's name gains an `AAAA` and the dialler's IPv6 is broken | `overlay_endpoint` takes the first address and never tries another | the next address, when the path is dead |
+
+The start before the network nearly happened that day. `wlan0` associated
+17 s after node-l1 booted and the overlay was configured 7 s later. OpenRC's
+`after net` waits for `networking`, and `udhcpc -b` goes to the background
+when it has no lease yet, so `networking` can finish before there is an
+address. Besides a census that changed something and the join, the only
+caller of `ensure` is an edge errand that names co-edges (`serve_name`), and
+only when one arrives.
+
+**Brought back by WireGuard or by the design**, measured on 2026-11-23 or
+already recorded here: the private node switched off or silent; its mapping
+expiring; the router losing it while the public node knocks; a Wi-Fi
+reassociation; its public address changing, which is roaming and needs only
+the keepalive; its LAN address changing, and node-l1 has held four in
+nineteen days; the public node restarting, 45–55 s, as "The overlay" says.
+
+**Seen, not cured**, each worth a line in `doctor` rather than a repair: a
+path MTU smaller than `wabot0`'s 1420 needs, on a route that drops
+fragments; a key that changed on one side and has not reached the other; a
+provider's firewall closing UDP 51820; a LAN numbered inside
+`10.42.0.0/16`; conntrack full on the public node (node-0: 375 of 65,536).
+
+**And a dead tunnel is invisible on the side that waits.** `pair` calls a
+peer with any handshake a `Session`, whatever its age. The connections page
+says **Quiet** past 180 s, and the attention card raises only `Dialling` and
+`Nowhere`. node-0 spent 94 minutes like that.
+
+**Found on the way: a node whose name resolves nowhere is held public.**
+Both nodes record node-l1 at `node-l1.network.nubebasura.lat:443`, a name
+that resolves neither from its LAN nor from node-0. So its `kind` is
+`public`, it can be offered as an edge, and on node-l1 a peer with no
+endpoint and no handshake would read `Waiting` — "it will dial me" — when
+nothing ever will. `note_reachability` refuses a private address; it does
+not ask whether a name resolves. That fix is its own, not this phase's.
+
+### The design
+
+One loop in `serve`, every 30 seconds. It reads the kernel once, which is
+the read `pair` already makes for a page, and acts per peer.
+
+**1. Judge by age, and only where age means something.** A peer with a
+keepalive on either side renews its handshake within 180 s while the tunnel
+works: the keepalive guarantees a packet every 25 s, the sender rekeys after
+120 s, and WireGuard throws its keys away at 180 s. A handshake older than
+that is a tunnel with no keys, and `pair` gets a state for it, `Stale {
+since, at }`. A LAN pair has no keepalive and may be quiet for hours with
+nothing wrong. It is judged only by never having answered, which is already
+`Dialling`.
+
+**2. The side that dials repairs its path, in two steps.**
+
+- *At once*, `ensure`: recreate the interface if it is gone, resolve each
+  dialled name again, and if the address has not moved, try the next one
+  the name has. That covers the start before the network, the authority
+  moving, the interface reset and the `AAAA`.
+- *After three minutes with no path, and only behind NAT*, a new listen
+  port, chosen at random from the ephemeral range, at most once every five
+  minutes. A new source port is a new pair at the router, and the authority
+  learns it from the handshake, as it learned `:1024` on 2026-11-23. "Behind
+  NAT" means holding no public IPv4 address, which a node can see for
+  itself. A node with a public address is dialled at its port by others,
+  and keeps it.
+
+The second step is where the cost is. `needed` rebuilds the interface
+whenever the kernel's port differs from the config, so the next `ensure`
+would undo a rotated port. And every dialler assumes the port it dials is
+its own. So **the port becomes part of a node's address**: stored on its
+row, sent with the census beside `lan`, and used by `overlay_endpoint` and
+`lan_endpoint` for that peer. `learn_the_network` already calls `ensure`
+when a row moves, so a LAN sibling dials the new port at its next pass. That
+mends the `overlay.port` fault as well.
+
+It needs a version constant, as `DIRECTORY_SINCE` was. A node older than it
+dials a LAN sibling at its own configured port, so **a node rotates only
+when every LAN sibling that dials it is at or past that version**. Its
+authority does not dial it at all.
+
+Whether `defguard_wireguard_rs` can change the port without dropping peers
+is still to be checked. The kernel allows it: `WGDEVICE_A_LISTEN_PORT` on a
+live device keeps its peers and keys. If the crate can only rebuild, the
+cost is a LAN sibling's session for a moment. The authority's session is
+dead already.
+
+**3. The side that waits forgets.** A learned endpoint whose session has
+been `Stale` for three minutes is dropped. That means removing the peer and
+adding it again without an endpoint, because WireGuard has no other way to
+clear one, and the session it loses is already gone. It forgets the
+dialler's last timestamp, which is the only cure for the clock going back.
+It stops five-second knocks at a node that is switched off, which node-l1
+often is. And the page says `Waiting`, which is then true.
+
+**4. It says so.** `Stale` is a concern on both sides, with the last thing
+the loop did: "a new port at 17:02, because node-0 had not answered for
+three minutes". A repair nobody can see is one nobody can trust or debug.
+
+### What it does not do
+
+- Two nodes behind NAT and not on one LAN are still `Nowhere`, with no
+  relay.
+- A network that closes outbound UDP.
+- Anything on the "seen, not cured" list.
+- Change the boot order. `after net` could become a wait for an address,
+  but with step 2 the race costs thirty seconds at most, and an init script
+  that waits for a lease is one more thing written for every init system.
+
+### How it will be known to work
+
+On the VMs, each fault in the first table that can be made there: a
+resolver that does not answer while `wabot-dev-2` boots; `ip link del
+wabot0`; the authority's address changed in `/etc/hosts`; a different
+`overlay.port` on one of them; a clock set back. The judgement — `Stale`,
+the escalation, "behind NAT" — is pure and sits above the Linux line, like
+`pair`, and each of its tests is seen to fail with the fault put back.
+
+The router's fault can be checked only on node-l1, when it happens again.
+What can be said now is that its cure was measured: on 2026-11-23 a
+different source port crossed the same router while 51820 could not.
+
+**What ran on the VMs, 2026-11-23** (the VMs' clocks; `wabot-dev` the
+authority, `wabot-dev-2` its member, both on one Lima network):
+
+| Fault | What happened |
+|---|---|
+| `ip link del wabot0` on the member at 17:41:40 | the pass at 17:42:06 recreated it; a session 8 s later |
+| On the member, `iptables` dropping only `:51820 → wabot-dev:51820` from 17:42:25 — the router's trap, made by hand | `STALE` at 17:45:09 (a handshake 188 s old); "dialled it again" at 17:45:36; at 17:48:06, the handshake 360 s old, "moving to a new port from=51820 to=52052"; a session within the same second. The authority stored `52052` from the next report and its kernel held `192.168.104.3:52052` |
+| The member restarted after the move | `overlay up port=52052`, "already matches" — nothing rebuilt back onto the blocked port |
+| The authority's name pointed at another address in the member's `/etc/hosts` at 17:48:55 | the pass at 17:49:05 dialled the new one, "this peer differs field=endpoint"; with the line taken out, the next pass changed nothing |
+
+Not made there: a different `overlay.port` on one of them, which the
+travelling port covers and a test asserts; a clock set back, whose cure is
+the forgetting; and the forgetting itself, which the one network cannot
+show — see "What was built".
+
+### Decided
+
+- The thresholds: three minutes before a path is dead, WireGuard's own
+  180 s; five minutes between ports.
+- The range: `49152–65535`, the one IANA leaves for dynamic use. Nothing on
+  a node guards UDP — its own chain is SSH and published ports — and a band
+  small enough to name in a rule is one a router can hold stale too.
+- A node that moved does not go back to 51820. The port is part of its
+  address now, and going back is one more move that can meet the same
+  router.
+
+### What was built
+
+`infra::network::repair` is the loop, `infra::network::port` the port as
+part of a node's address, and migration `0087` both columns. Where it
+differs from the design above, and why:
+
+- **It converges every pass**, not only when a path looks dead.
+  `tunnel::converge` is `ensure` without its "already matches" line, and a
+  pass that finds the kernel right tells it nothing. That one call is the
+  repair for the start before the network, the authority that moved, the
+  interface deleted and a peer missing from the kernel, with no rule for
+  each. A name that stops resolving is said once and its return once, not
+  every thirty seconds — node-0 holds node-l1's, which resolves nowhere.
+- **A dialled address is kept while its name still gives it.** `choose`
+  prefers what the kernel holds, so a resolver answering in another order
+  does not move a working tunnel. A dead one steps to the next address at
+  once and every three minutes after.
+- **The version gate is a sibling having said its port**, not a constant.
+  A node on this machine's own networks that has not said one is older
+  than the field and dials the configured port; the same fact that makes
+  a move safe is the gate. An authority older than this relays no ports,
+  so no sibling of it ever moves.
+- **"Behind NAT" is two facts**: no public IPv4 among the node's own
+  addresses, and its own name, if it has one, not resolving. node-l1 has
+  one — the name that resolves nowhere — and is the node this was written
+  for. A name that resolves is one somebody dials, maybe through a port
+  forward on a router the node cannot see, and a move would break it.
+- **A move needs the peer to have answered over HTTPS within a minute.**
+  The collector notes each authority that hands back its errands. Without
+  it, an authority switched off for an hour would be met with a move every
+  five minutes, each costing the LAN siblings their session, and no census
+  to tell them the new port.
+- **The crate can only rebuild.** `defguard_wireguard_rs` sends
+  `ReplacePeers` with every device write, so a move rebuilds the interface
+  and a LAN sibling loses its session for a moment. The dialled one is
+  dead already.
+- **The side that waits judges by where the packets came from.** It cannot
+  see the other side's keepalive, but a learned endpoint off its own
+  networks came across the internet, which nobody dials without one. On
+  its own LAN it never calls a tunnel stale and never forgets, so the two
+  VMs — one network — cannot show the forgetting; a test does.
+- **It says so** in `tunnel_repair`, one row per peer: the first redial of
+  a dead stretch, every move, every forgetting. A stale tunnel is the
+  concern "A tunnel that stopped working" and reads **Lost** on the
+  connections page; the never-answered concern gains the same last action;
+  `doctor` prints `STALE` and a `repair` line under the path.
