@@ -4,8 +4,9 @@
 use hypertext::prelude::*;
 use hypertext::Raw;
 
+use crate::domain::entities::copy_metric::BUCKET_MS;
 use crate::domain::entities::service_event::{EventKind, Severity};
-use crate::domain::policies::stability::{Row, DAY_MS};
+use crate::domain::policies::stability::Row;
 use crate::features::stability::see_service_stability_request::day_param;
 use crate::features::stability::service_stability_response::{
     Chart, EventLine, ServiceStabilityResponse,
@@ -71,8 +72,9 @@ pub fn who(event: &EventLine, copies: usize) -> String {
     }
 }
 
-fn place(at: i64, day: i64) -> f64 {
-    ((at - day) as f64 / DAY_MS as f64 * 100.0).clamp(0.0, 100.0)
+fn place(response: &ServiceStabilityResponse, at: i64) -> f64 {
+    let span = response.span as i64 * BUCKET_MS;
+    ((at - response.start) as f64 / span as f64 * 100.0).clamp(0.0, 100.0)
 }
 
 struct Marker {
@@ -112,10 +114,10 @@ impl Group<'_> {
     }
 }
 
-fn groups<'a>(events: &'a [EventLine], day: i64) -> Vec<Group<'a>> {
+fn groups(response: &ServiceStabilityResponse) -> Vec<Group<'_>> {
     let mut groups: Vec<Group> = Vec::new();
-    for event in events {
-        let x = place(event.at.max(day), day);
+    for event in &response.day_events {
+        let x = place(response, event.at.max(response.selected));
         match groups.last_mut() {
             Some(group) if x - group.x < 1.8 => group.events.push(event),
             _ => groups.push(Group {
@@ -149,13 +151,18 @@ pub fn day<'a>(
     base: &'a str,
 ) -> impl Renderable + 'a {
     let selected = response.selected;
+    let zone = &response.zone;
     let link = |day: i64, event: Option<&str>| match event {
         Some(id) => format!(
             "{base}?days={}&day={}&event={id}#day",
             response.days,
-            day_param(day)
+            day_param(zone, day)
         ),
-        None => format!("{base}?days={}&day={}#day", response.days, day_param(day)),
+        None => format!(
+            "{base}?days={}&day={}#day",
+            response.days,
+            day_param(zone, day)
+        ),
     };
     let first = response
         .strip
@@ -163,11 +170,14 @@ pub fn day<'a>(
         .map(|day| day.start)
         .unwrap_or(selected)
         .max(response.since.unwrap_or(selected));
-    let previous = (selected > first).then(|| link(selected - DAY_MS, None));
-    let next = (selected < response.today).then(|| link(selected + DAY_MS, None));
+    let previous = (selected > first).then(|| link(zone.previous_day(selected), None));
+    let next = (selected < response.today).then(|| link(zone.next_day(selected), None));
     let mut title = texts::full_day(selected);
     if selected == response.today {
         title.push_str(&format!(" · {}", t("today")));
+    }
+    if zone.reader_unknown() {
+        title.push_str(" · UTC");
     }
     let stats = response
         .strip
@@ -194,7 +204,7 @@ pub fn day<'a>(
             )
         })
         .collect();
-    let grouped = groups(&response.day_events, selected);
+    let grouped = groups(response);
     let pinned = response.pinned.as_deref();
     let markers: Vec<Marker> = grouped
         .iter()
@@ -267,8 +277,8 @@ pub fn day<'a>(
         .iter()
         .filter_map(|event| {
             let until = event.until?;
-            let start = place(event.at, selected);
-            let width = (place(until, selected) - start).max(0.4);
+            let start = place(response, event.at);
+            let width = (place(response, until) - start).max(0.4);
             Some((
                 format!("st-region {}", severity(event.severity)),
                 start,
@@ -283,13 +293,16 @@ pub fn day<'a>(
         .map(|event| {
             (
                 format!("st-vline {}", severity(event.severity)),
-                place(event.at, selected),
+                place(response, event.at),
             )
         })
         .collect();
     let hours: Vec<(f64, String)> = (3..24)
         .step_by(3)
-        .map(|hour| (hour as f64 / 24.0 * 100.0, format!("{hour:02}:00")))
+        .filter_map(|hour| {
+            let at = zone.hour_on(selected, hour)?;
+            Some((place(response, at), format!("{hour:02}:00")))
+        })
         .collect();
     let close = link(selected, None);
     rsx! {

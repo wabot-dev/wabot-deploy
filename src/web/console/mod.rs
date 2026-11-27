@@ -1557,4 +1557,42 @@ pub(crate) mod tests {
             );
         }
     }
+
+    /// The tab printed UTC times with no zone beside them, so they read as
+    /// the reader's own and were five hours off in Bogotá (Jorge,
+    /// 2026-11-27).
+    #[tokio::test]
+    async fn the_stability_tab_counts_in_the_zone_the_browser_named_and_says_when_it_could_not() {
+        let console = Console::new().await;
+        let cookie = console.signed_in().await;
+        a_project_with_a_failed_copy(&console, &cookie).await;
+        let path = "/projects/demo/services/api/stability";
+
+        let zoned = console
+            .harness
+            .get(path)
+            .header("cookie", format!("{cookie}; tz=America/Bogota"))
+            .send()
+            .await
+            .body;
+        assert!(
+            zoned.contains("America/Bogota"),
+            "the island is not told: {zoned}"
+        );
+        assert!(
+            !zoned.contains("· UTC"),
+            "a zone it knows is still UTC: {zoned}"
+        );
+
+        for unknown in [cookie.clone(), format!("{cookie}; tz=Nowhere/At_All")] {
+            let body = console
+                .harness
+                .get(path)
+                .header("cookie", &unknown)
+                .send()
+                .await
+                .body;
+            assert!(body.contains("· UTC"), "UTC without saying so: {body}");
+        }
+    }
 }

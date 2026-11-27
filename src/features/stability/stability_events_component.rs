@@ -20,6 +20,10 @@ struct Line {
 
 pub fn events<'a>(response: &'a ServiceStabilityResponse, base: &'a str) -> impl Renderable + 'a {
     let copies = response.copies.len();
+    let when = match response.zone.reader_unknown() {
+        true => format!("{} · UTC", t("When")),
+        false => t("When").to_string(),
+    };
     let lines: Vec<Line> = response
         .period_events
         .iter()
@@ -39,7 +43,7 @@ pub fn events<'a>(response: &'a ServiceStabilityResponse, base: &'a str) -> impl
                 href: format!(
                     "{base}?days={}&day={}&event={}#day",
                     response.days,
-                    day_param(event.at),
+                    day_param(&response.zone, event.at),
                     event.id
                 ),
                 title: texts::title(event),
@@ -56,7 +60,7 @@ pub fn events<'a>(response: &'a ServiceStabilityResponse, base: &'a str) -> impl
             } @else {
                 <div class="st-scroll">
                     <table>
-                        <thead><tr><th>(t("When"))</th><th>(t("Event"))</th><th>(texts::copy_heading())</th><th>(t("Detail"))</th></tr></thead>
+                        <thead><tr><th>(when)</th><th>(t("Event"))</th><th>(texts::copy_heading())</th><th>(t("Detail"))</th></tr></thead>
                         <tbody>
                             @for line in &lines {
                                 <tr class=(line.class)>

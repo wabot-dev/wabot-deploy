@@ -52,7 +52,7 @@ fn cells(response: &ServiceStabilityResponse, base: &str) -> Vec<(&'static str, 
                             format!(
                                 "{base}?days={}&day={}#day",
                                 response.days,
-                                day_param(day.start)
+                                day_param(&response.zone, day.start)
                             )
                         }),
                         tip: format!("{date} · {head} · {why}"),

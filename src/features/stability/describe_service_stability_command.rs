@@ -5,7 +5,8 @@ use crate::domain::entities::project::Project;
 use crate::domain::entities::replica::Replica;
 use crate::domain::entities::service::{Kind, Service};
 use crate::domain::entities::service_event::{EventKind, ServiceEvent};
-use crate::domain::policies::stability::{self, day_of, Copy, Input, Row, DAY_MS};
+use crate::domain::policies::stability::{self, Copy, Input, Row, DAY_MS, LOOKBACK};
+use crate::domain::values::time_zone::TimeZone;
 use crate::features::stability::service_stability_response::{
     Chart, CopyKey, EventLine, ServiceStabilityResponse,
 };
@@ -18,6 +19,7 @@ pub struct DescribeServiceStability<'a> {
     pub days: u32,
     pub day: Option<i64>,
     pub event: Option<&'a str>,
+    pub zone: &'a TimeZone,
 }
 
 struct Held {
@@ -34,10 +36,17 @@ impl DescribeServiceStability<'_> {
             tracing::warn!(%error, service = %service.slug, "could not read a service's history");
             "its history could not be read".to_string()
         };
+        let zone = self.zone;
         let now = crate::infra::clock::now_ms();
-        let today = day_of(now);
-        let first = today - i64::from(self.days - 1) * DAY_MS;
-        let from = first - 7 * DAY_MS;
+        let today = zone.day_of(now);
+        let mut bounds = vec![zone.next_day(today), today];
+        for _ in 1..self.days as usize + LOOKBACK {
+            let earlier = zone.previous_day(bounds[bounds.len() - 1]);
+            bounds.push(earlier);
+        }
+        bounds.reverse();
+        let first = bounds[LOOKBACK];
+        let from = bounds[0];
 
         let mut copies: Vec<Replica> = replicas::of_service(database, &service.id)
             .await
@@ -47,43 +56,55 @@ impl DescribeServiceStability<'_> {
             .collect();
         copies.sort_by_key(|replica| replica.slot);
 
-        let mut unreachable = Vec::new();
-        let mut held = Vec::new();
+        let mut placed = Vec::new();
         for replica in copies {
             let container = replica.container_id(&project.slug, &service.slug);
             let node = match (&replica.node_id, replica.is_here()) {
-                (Some(node_id), false) => {
-                    let name = crate::infra::network::find(database, node_id)
+                (Some(node_id), false) => Some((
+                    node_id.clone(),
+                    crate::infra::network::find(database, node_id)
                         .await
                         .ok()
                         .flatten()
                         .map(|node| node.name)
-                        .unwrap_or_else(|| node_id.clone());
-                    if service.origin_node_id.is_none() {
-                        let gathered = crate::infra::network::gather_history(
-                            database,
-                            node_id,
-                            (&project.name, &service.name, replica.slot),
-                            &container,
-                            &service.id,
-                            (from, now),
-                        )
-                        .await;
-                        if let Err(reason) = gathered {
-                            unreachable.push((name.clone(), reason));
-                        }
-                    }
-                    Some(name)
-                }
+                        .unwrap_or_else(|| node_id.clone()),
+                )),
                 _ => None,
             };
+            placed.push((replica, container, node));
+        }
+
+        let owned_here = service.origin_node_id.is_none();
+        let gathered = futures_util::future::join_all(placed.iter().filter_map(
+            |(replica, container, node)| {
+                let (node_id, name) = node.as_ref().filter(|_| owned_here)?;
+                Some(async move {
+                    crate::infra::network::gather_history(
+                        database,
+                        node_id,
+                        (&project.name, &service.name, replica.slot),
+                        container,
+                        &service.id,
+                        (from, now),
+                    )
+                    .await
+                    .err()
+                    .map(|reason| (name.clone(), reason))
+                })
+            },
+        ))
+        .await;
+        let unreachable: Vec<(String, String)> = gathered.into_iter().flatten().collect();
+
+        let mut held = Vec::new();
+        for (replica, container, node) in placed {
             let metrics = copy_metrics::of_container(database, &container, from, now)
                 .await
                 .map_err(|error| unreadable(error.to_string()))?;
             held.push(Held {
                 replica,
                 container,
-                node,
+                node: node.map(|(_, name)| name),
                 metrics,
             });
         }
@@ -132,7 +153,7 @@ impl DescribeServiceStability<'_> {
             rows: &rows,
             backup_every,
         };
-        let strip = stability::days(&input, first, self.days as usize);
+        let strip = stability::days(&input, &bounds);
         let mut everything = events.clone();
         everything.extend(stability::derived(&input, first, now));
         everything.sort_by_key(|event| event.at);
@@ -140,8 +161,8 @@ impl DescribeServiceStability<'_> {
         let pinned_day = self
             .event
             .and_then(|id| everything.iter().find(|event| event.id == id))
-            .map(|event| day_of(event.at));
-        let measured_since = stability::since(&policy_copies).map(day_of);
+            .map(|event| zone.day_of(event.at));
+        let measured_since = stability::since(&policy_copies).map(|at| zone.day_of(at));
         let since = measured_since.unwrap_or(today);
         let selected = self
             .day
@@ -150,16 +171,19 @@ impl DescribeServiceStability<'_> {
             .unwrap_or(today)
             .clamp(first.max(since).min(today), today);
 
+        let end = zone.next_day(selected);
+        let start = selected - selected.rem_euclid(BUCKET_MS);
+        let span = ((end - start + BUCKET_MS - 1) / BUCKET_MS) as usize;
         let buckets = match selected == today {
-            true => (((now - today) / BUCKET_MS) as usize).max(1),
-            false => (DAY_MS / BUCKET_MS) as usize,
+            true => (((now - start) / BUCKET_MS) as usize).clamp(1, span),
+            false => span,
         };
         let series = held
             .iter()
             .map(|copy| {
                 let mut line = vec![None; buckets];
                 for metric in &copy.metrics {
-                    let index = (metric.bucket - selected) / BUCKET_MS;
+                    let index = (metric.bucket - start) / BUCKET_MS;
                     if (0..buckets as i64).contains(&index) {
                         line[index as usize] = Some(metric.clone());
                     }
@@ -187,7 +211,7 @@ impl DescribeServiceStability<'_> {
         };
         let day_events = everything
             .iter()
-            .filter(|event| event.at < selected + DAY_MS && event.ends() >= selected)
+            .filter(|event| event.at < end && event.ends() >= selected)
             .map(line)
             .collect();
         let period_events = everything
@@ -202,7 +226,7 @@ impl DescribeServiceStability<'_> {
                 events
                     .iter()
                     .rfind(|event| {
-                        event.kind == EventKind::Deployed && day_of(event.at) == day.start
+                        event.kind == EventKind::Deployed && zone.day_of(event.at) == day.start
                     })
                     .map(|event| {
                         (
@@ -217,8 +241,11 @@ impl DescribeServiceStability<'_> {
 
         Ok(ServiceStabilityResponse {
             days: self.days,
+            zone: zone.clone(),
             today,
             selected,
+            start,
+            span,
             since: measured_since,
             rows,
             strip,

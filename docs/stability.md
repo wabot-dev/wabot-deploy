@@ -61,8 +61,10 @@ its ceiling, a disk past 85 % and 95 % of its own.
 
 ## How a day is judged
 
-`domain::policies::stability`, in UTC days. The policy returns a state and
-a structured reason, and the page writes the words.
+`domain::policies::stability`, in the reader's days: the caller hands it
+the midnights, so a day the clocks change is 23 or 25 hours and judged by
+its own. The policy returns a state and a structured reason, and the page
+writes the words.
 
 | Row | Attention | Incident |
 |---|---|---|
@@ -83,19 +85,39 @@ latest that was not good.
 ## Copies on other nodes
 
 The owner asks the node running a copy, by the road and credential its log
-takes: `POST /api/network/replica-history`, guarded by `placed_by`, a week
-at a time from the last ten minutes it already keeps, and a day of events
-before that so a span that has since closed is closed here. What it brings
-back is kept beside the owner's own rows. A node that cannot be asked is
-named above the strip with its reason, and its days go on reading as
-unmeasured — which they are, from here. `errand::HISTORY_SINCE` is the
-version a node answers from, and **it has to be the version this ships
-in**.
+takes: `POST /api/network/replica-history`, guarded by `placed_by`, from a
+day before the last ten minutes it already keeps, so a span that has since
+closed is closed here. Each answer carries measurements and events, so the
+usual page load is one call per far copy; a first gathering goes a week at
+a time. What it brings back is kept beside the owner's own rows. A node
+that cannot be asked is named above the strip with its reason, and its
+days go on reading as unmeasured — which they are, from here.
+`errand::HISTORY_SINCE` is the version a node answers from, and **it has
+to be the version this ships in**.
+
+The page waits for those answers, so they are asked all at once rather
+than one copy after another, and a copy asked in the last minute is not
+asked again: its answer, or its reason, stands. Before that, every click
+on a day cost each far copy two calls in a row, and a node that was off —
+node-l1, for days on 2026-11-27 — cost each one the overlay's five-second
+timeout. The first gathering also asked the whole window again for its
+events, measurements included, which past three weeks is more than one
+answer may carry.
 
 ## The page
 
 `/projects/<project>/services/<service>/stability?days=30|90&day=YYYY-MM-DD&event=<id>`,
-the tab after Overview. Complete without a script: every cell and marker
+the tab after Overview.
+
+Its days and times are the reader's. Only the browser knows its zone, so
+`console.js` writes it to a `tz` cookie on every page, the middleware puts
+it in `Asked`, and the request resolves it against the zone database bundled
+in the binary (`jiff`; an Alpine node need not have one). With no cookie —
+scripting off, or the first page ever — the page counts in UTC and says
+`UTC` beside the day and the events table. It printed UTC with no label
+until 2026-11-27, which read as local and was five hours off in Bogotá. The
+rest of the console still prints UTC where somebody types a time back, and
+says so. Complete without a script: every cell and marker
 is a link, the pinned event's card is rendered by the server, and the SVG
 is numbers and class names only. The `stability` island adds the tooltips,
 the crosshair and the cards on hover, from the numbers each chart was drawn

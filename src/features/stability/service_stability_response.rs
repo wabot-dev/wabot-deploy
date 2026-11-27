@@ -1,6 +1,7 @@
 use crate::domain::entities::copy_metric::CopyMetric;
 use crate::domain::entities::service_event::{EventKind, Severity};
 use crate::domain::policies::stability::{Day, Row};
+use crate::domain::values::time_zone::TimeZone;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chart {
@@ -33,8 +34,16 @@ pub struct EventLine {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServiceStabilityResponse {
     pub days: u32,
+    pub zone: TimeZone,
     pub today: i64,
     pub selected: i64,
+    /// The first ten minutes the charts draw: the selected day's midnight,
+    /// back to the ten minutes holding it, because a zone can be a quarter
+    /// of an hour off them.
+    pub start: i64,
+    /// How many ten minutes the selected day spans from `start`, which is
+    /// not 144 on a day the clocks change.
+    pub span: usize,
     pub since: Option<i64>,
     pub rows: Vec<Row>,
     pub strip: Vec<Day>,

@@ -75,6 +75,10 @@ rcgen = { version = "0.13", features = ["x509-parser"] }
 # Certificate validity windows. Pinned to what rcgen uses, so the
 # `OffsetDateTime` handed to `CertificateParams` is the same type.
 time = { version = "0.3", default-features = false, features = ["std"] }
+# The reader's own days on a page that counts them. The zone database is
+# bundled because an Alpine node need not have `/usr/share/zoneinfo`, and a
+# page that read it from the machine would count days differently on each.
+jiff = { version = "1", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 # The route table: read on every request, replaced whole on the rare
 # change. A lock would put every request behind the one writer.

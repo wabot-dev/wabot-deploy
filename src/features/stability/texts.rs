@@ -3,6 +3,7 @@
 use crate::domain::entities::service_event::EventKind;
 use crate::domain::policies::stability::{Reason, Row, State, Stop};
 use crate::domain::values::language::Language;
+use crate::domain::values::time_zone::{Moment, TimeZone};
 use crate::features::stability::service_stability_response::EventLine;
 
 pub(crate) const TABLE: &[(&str, &str)] = &[
@@ -52,6 +53,24 @@ fn spanish() -> bool {
     crate::shell::texts::language::current() == Language::Es
 }
 
+thread_local! {
+    static ZONE: std::cell::RefCell<TimeZone> = std::cell::RefCell::new(TimeZone::utc());
+}
+
+/// Every time this page prints, in the reader's zone: scoped around the
+/// render, as the language is, rather than carried to every reason that
+/// says when something happened.
+pub fn zoned<T>(zone: &TimeZone, render: impl FnOnce() -> T) -> T {
+    let before = ZONE.with(|current| current.replace(zone.clone()));
+    let rendered = render();
+    ZONE.with(|current| current.replace(before));
+    rendered
+}
+
+fn in_zone(at: i64) -> Option<Moment> {
+    ZONE.with(|zone| zone.borrow().moment(at))
+}
+
 pub fn decimal(value: f64, places: usize) -> String {
     let text = format!("{value:.places$}");
     match spanish() {
@@ -77,8 +96,8 @@ pub fn millicores(value: u32) -> String {
 }
 
 pub fn clock(at: i64) -> String {
-    time::OffsetDateTime::from_unix_timestamp(at.div_euclid(1000))
-        .map(|moment| format!("{:02}:{:02}", moment.hour(), moment.minute()))
+    in_zone(at)
+        .map(|moment| format!("{:02}:{:02}", moment.hour, moment.minute))
         .unwrap_or_default()
 }
 
@@ -130,11 +149,11 @@ const MONTHS_ES: [&str; 12] = [
 ];
 
 fn parts(at: i64) -> Option<(usize, u8, usize)> {
-    let moment = time::OffsetDateTime::from_unix_timestamp(at.div_euclid(1000)).ok()?;
+    let moment = in_zone(at)?;
     Some((
-        moment.weekday().number_days_from_monday() as usize,
-        moment.day(),
-        u8::from(moment.month()) as usize - 1,
+        moment.weekday as usize,
+        moment.day,
+        moment.month as usize - 1,
     ))
 }
 
@@ -507,5 +526,20 @@ mod tests {
         assert_eq!(tag("node:5000/demo/api:v19"), "v19");
         assert_eq!(tag("node.example/demo/api@sha256:abc"), "api");
         assert_eq!(tag("docker.io/traefik/whoami:v1.10"), "v1.10");
+    }
+
+    #[test]
+    fn a_time_is_printed_on_the_readers_clock_and_only_while_the_render_lasts() {
+        let late = 1_795_316_400_000;
+        let bogota = TimeZone::named("America/Bogota").expect("a zone");
+        let (clock_there, day_there) = zoned(&bogota, || (clock(late), short_day(late)));
+        assert_eq!(
+            (clock_there.as_str(), day_there.as_str()),
+            ("22:00", "21 Nov")
+        );
+        assert_eq!(
+            (clock(late).as_str(), short_day(late).as_str()),
+            ("03:00", "22 Nov")
+        );
     }
 }

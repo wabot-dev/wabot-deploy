@@ -26,6 +26,18 @@
 (function () {
   'use strict';
 
+  // ---- the reader's time zone -----------------------------------------
+  //
+  // Only the browser knows it, and a page that counts days has to know it
+  // before it renders. Without this cookie the server counts in UTC and
+  // says so beside the times.
+  try {
+    var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (zone && /^[A-Za-z0-9_+\-\/]+$/.test(zone)) {
+      document.cookie = 'tz=' + zone + '; Path=/; Max-Age=31536000; SameSite=Lax; Secure';
+    }
+  } catch (ignored) {}
+
   // ---- conditional fields ---------------------------------------------
   //
   //   <div data-when="https">…</div>            shown while `https` is on
@@ -874,9 +886,23 @@
   var two = function (n) {
     return (n < 10 ? '0' : '') + n;
   };
-  var clock = function (ms) {
-    var d = new Date(ms);
-    return two(d.getUTCHours()) + ':' + two(d.getUTCMinutes());
+  var clockIn = function (zone) {
+    try {
+      var format = new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone || 'UTC',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      });
+      return function (ms) {
+        return format.format(new Date(ms));
+      };
+    } catch (ignored) {
+      return function (ms) {
+        var d = new Date(ms);
+        return two(d.getHours()) + ':' + two(d.getMinutes());
+      };
+    }
   };
 
   wabot.island('stability', function (host, props) {
@@ -889,6 +915,7 @@
       });
     };
     var format = stabilityFormat(props);
+    var clock = clockIn(props.zone);
 
     var strips = host.querySelector('.st-strips');
     if (strips) {
@@ -962,7 +989,7 @@
 
     var charts = host.querySelector('[data-st-charts]');
     if (charts && props.charts) {
-      var full = 86400000 / props.step;
+      var full = props.full;
       var chartTip = stabilityTip(charts);
       var lines = [];
       host.querySelectorAll('[data-st-plot]').forEach(function (plot) {

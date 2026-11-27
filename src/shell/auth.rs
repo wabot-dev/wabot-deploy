@@ -67,6 +67,7 @@ impl Middleware for SessionMiddleware {
                 .unwrap_or_default(),
             scope: scope.clone(),
             pending: accounts::requests::from_headers(&parts.headers),
+            zone: sessions::cookie(&parts.headers, ZONE_COOKIE),
         }));
         let Some(token) = sessions::from_headers(&parts.headers) else {
             return Ok(());
@@ -115,7 +116,12 @@ pub struct Asked {
     pub host: String,
     pub scope: Option<String>,
     pub pending: Option<String>,
+    pub zone: Option<String>,
 }
+
+/// Written by `console.js`, because only the browser knows its zone and a
+/// page that counts days has to know it before it renders.
+pub const ZONE_COOKIE: &str = "tz";
 
 /// Where an unauthenticated visitor belongs.
 ///

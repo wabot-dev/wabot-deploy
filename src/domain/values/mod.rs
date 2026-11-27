@@ -25,4 +25,5 @@ pub mod record_name;
 pub mod roles;
 pub mod slug;
 pub mod theme;
+pub mod time_zone;
 pub mod zone_name;

@@ -1303,10 +1303,18 @@ pub async fn replica_history(
     }
 }
 
-/// Bring this node's copy of a far copy's history up to now: what it
-/// measured since the last ten minutes kept here, a week at a time so
-/// each answer stays well under what one call may carry, and its events
-/// from a day before that, so a span that closed since is closed here too.
+/// Bring this node's copy of a far copy's history up to now, from a day
+/// before the last ten minutes kept here.
+///
+/// The day is for the events: a span that closed since is closed here too.
+/// Each answer carries both halves, so one call covers the usual case, and
+/// a week at a time keeps a first gathering under what one call may carry.
+/// It once asked the whole window again for its events, measurements
+/// included, which past three weeks is more than that.
+///
+/// A copy asked within the last minute is not asked again, and its answer
+/// then stands: the page is clicked through a day at a time, and a node
+/// that does not answer would otherwise cost every click its timeout.
 pub async fn gather_history(
     database: &SqliteDatabase,
     holder: &str,
@@ -1315,7 +1323,35 @@ pub async fn gather_history(
     service_id: &str,
     window: (i64, i64),
 ) -> Result<(), String> {
-    const WEEK: i64 = 7 * 86_400_000;
+    const ASKED_WITHIN: i64 = 60_000;
+    type Asked = std::collections::BTreeMap<String, (i64, Result<(), String>)>;
+    static ASKED: std::sync::Mutex<Asked> = std::sync::Mutex::new(Asked::new());
+    let remembered = ASKED
+        .lock()
+        .ok()
+        .and_then(|asked| asked.get(container).cloned())
+        .filter(|(at, _)| window.1 - at < ASKED_WITHIN);
+    if let Some((_, answer)) = remembered {
+        return answer;
+    }
+    let answer = gather(database, holder, names, container, service_id, window).await;
+    if let Ok(mut asked) = ASKED.lock() {
+        asked.retain(|_, (at, _)| window.1 - *at < ASKED_WITHIN);
+        asked.insert(container.to_string(), (window.1, answer.clone()));
+    }
+    answer
+}
+
+async fn gather(
+    database: &SqliteDatabase,
+    holder: &str,
+    names: (&str, &str, u32),
+    container: &str,
+    service_id: &str,
+    window: (i64, i64),
+) -> Result<(), String> {
+    const DAY: i64 = 86_400_000;
+    const WEEK: i64 = 7 * DAY;
     let (project, service, slot) = names;
     let kept = crate::infra::repositories::copy_metrics::latest(database, container)
         .await
@@ -1323,31 +1359,20 @@ pub async fn gather_history(
     let mut from = kept
         .map(|bucket| bucket + crate::domain::entities::copy_metric::BUCKET_MS)
         .unwrap_or(window.0)
-        .max(window.0);
-    let events_from = from - 86_400_000;
+        .max(window.0)
+        - DAY;
     while from < window.1 {
         let to = (from + WEEK).min(window.1);
         let history = replica_history(database, holder, project, service, slot, (from, to)).await?;
         crate::infra::repositories::copy_metrics::write(database, history.metrics)
             .await
             .map_err(|error| error.to_string())?;
-        if to == window.1 {
-            break;
-        }
+        crate::infra::repositories::service_events::keep(database, service_id, history.events)
+            .await
+            .map_err(|error| error.to_string())?;
         from = to;
     }
-    let history = replica_history(
-        database,
-        holder,
-        project,
-        service,
-        slot,
-        (events_from, window.1),
-    )
-    .await?;
-    crate::infra::repositories::service_events::keep(database, service_id, history.events)
-        .await
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 /// Whether the node holding a copy follows its log for this one.

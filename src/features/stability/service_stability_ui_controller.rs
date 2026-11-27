@@ -8,6 +8,7 @@ use wabot::ui::hypertext::IntoView;
 use crate::features::stability::see_service_stability_request::SeeServiceStabilityRequest;
 use crate::features::stability::service_stability_page::{self, StabilityPage};
 use crate::features::stability::stability_chart_component::plots;
+use crate::features::stability::texts;
 use crate::infra::repositories::{access, services};
 use crate::shell::auth::{signed_in, SessionMiddleware};
 use crate::shell::layouts::layout;
@@ -29,6 +30,7 @@ pub struct StabilityQuery {
 pub struct ServiceStabilityUiController {
     state: Arc<ConsoleState>,
     auth: Arc<Auth>,
+    asked: Arc<crate::shell::auth::Asked>,
 }
 
 #[ui_controller("/", app)]
@@ -55,6 +57,7 @@ impl ServiceStabilityUiController {
             query.days.as_deref(),
             query.day.as_deref(),
             query.event.as_deref(),
+            self.asked.zone.as_deref(),
         );
         let seen = match crate::domain::authz::node_user::belongs_here(&account) {
             true => {
@@ -98,11 +101,13 @@ impl ServiceStabilityUiController {
             response: &response,
         };
         let (body, data) = crate::shell::texts::language::scoped(account.language, || {
-            let drawn = plots(&response);
-            let body = service_stability_page::render(&page, &drawn)
-                .render()
-                .into_inner();
-            (body, service_stability_page::island_data(&page, &drawn))
+            texts::zoned(&response.zone, || {
+                let drawn = plots(&response);
+                let body = service_stability_page::render(&page, &drawn)
+                    .render()
+                    .into_inner();
+                (body, service_stability_page::island_data(&page, &drawn))
+            })
         });
         let body = wabot::ui::hypertext::island(
             "stability",

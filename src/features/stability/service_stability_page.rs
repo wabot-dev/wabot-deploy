@@ -37,9 +37,11 @@ impl StabilityPage<'_> {
 pub fn island_data(page: &StabilityPage, plots: &[Plot]) -> serde_json::Value {
     let response = page.response;
     serde_json::json!({
-        "start": response.selected,
+        "start": response.start,
         "step": BUCKET_MS,
         "buckets": response.buckets,
+        "full": response.span,
+        "zone": response.zone.name(),
         "comma": crate::shell::texts::language::current() == Language::Es,
         "copies": response
             .copies
@@ -68,7 +70,10 @@ pub fn render<'a>(page: &'a StabilityPage<'a>, plots: &'a [Plot]) -> impl Render
         .map(|days| {
             (
                 response.days == days,
-                format!("{base}?days={days}&day={}", day_param(response.selected)),
+                format!(
+                    "{base}?days={days}&day={}",
+                    day_param(&response.zone, response.selected)
+                ),
                 texts::days(days),
             )
         })

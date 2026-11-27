@@ -1,7 +1,8 @@
 //! How a day went for a service, read from what its copies measured and
 //! what happened to it (`docs/stability.md`).
 //!
-//! Days are UTC, like every time the console prints.
+//! A day is whatever the caller's bounds say it is: the reader's, which is
+//! not always twenty-four hours long.
 
 use std::collections::BTreeMap;
 
@@ -161,10 +162,6 @@ pub struct Day {
     pub start: i64,
     pub verdicts: BTreeMap<Row, Verdict>,
     pub stats: DayStats,
-}
-
-pub fn day_of(at: i64) -> i64 {
-    at - at.rem_euclid(DAY_MS)
 }
 
 /// The first moment anything was measured for this service: before it,
@@ -339,23 +336,26 @@ fn measure(input: &Input, stops: &[(i64, i64)], from: i64, to: i64) -> Measured 
     measured
 }
 
-/// Every day from `first` for `count` days, oldest first.
-pub fn days(input: &Input, first: i64, count: usize) -> Vec<Day> {
-    let first = day_of(first);
+/// The days a network or a disk is compared against, before the first
+/// one judged.
+pub const LOOKBACK: usize = 7;
+
+/// Every day whose bounds are given, oldest first: the midnights from
+/// [`LOOKBACK`] days before the first judged to the end of the last.
+pub fn days(input: &Input, bounds: &[i64]) -> Vec<Day> {
+    let lookback = LOOKBACK;
+    let count = bounds.len().saturating_sub(lookback + 1);
     let since = since(input.copies);
     let stops = stopped(input.events, input.now);
-    let lookback = 7usize;
-    let measured: Vec<Measured> = (0..count + lookback)
-        .map(|index| {
-            let from = first + (index as i64 - lookback as i64) * DAY_MS;
-            measure(input, &stops, from, from + DAY_MS)
-        })
+    let measured: Vec<Measured> = bounds
+        .windows(2)
+        .map(|day| measure(input, &stops, day[0], day[1]))
         .collect();
 
     (0..count)
         .map(|index| {
-            let from = first + index as i64 * DAY_MS;
-            let to = from + DAY_MS;
+            let from = bounds[index + lookback];
+            let to = bounds[index + lookback + 1];
             let here = &measured[index + lookback];
             let events: Vec<&ServiceEvent> = input
                 .events
@@ -888,6 +888,12 @@ mod tests {
     const MB: u64 = 1024 * 1024;
     const DAY0: i64 = 20_000 * DAY_MS;
 
+    fn utc_days(count: i64) -> Vec<i64> {
+        (-(LOOKBACK as i64)..=count)
+            .map(|index| DAY0 + index * DAY_MS)
+            .collect()
+    }
+
     fn healthy(container: &str, from: i64, buckets: usize) -> Vec<CopyMetric> {
         (0..buckets)
             .map(|index| CopyMetric {
@@ -933,7 +939,7 @@ mod tests {
             rows,
             backup_every: Some(DAY_MS),
         };
-        days(&input, DAY0, 3)
+        days(&input, &utc_days(3))
     }
 
     #[test]
@@ -956,6 +962,34 @@ mod tests {
                 assert_eq!(verdict.state, State::Good, "{verdict:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_day_the_clocks_went_forward_is_judged_by_its_own_hours() {
+        const HOUR: i64 = 3_600_000;
+        let mut bounds = utc_days(0);
+        bounds.push(DAY0 + DAY_MS - HOUR);
+        bounds.push(DAY0 + 2 * DAY_MS - HOUR);
+        let metrics = healthy("p.api", DAY0, 23 * 6);
+        let copies = [Copy {
+            slot: 1,
+            container: "p.api",
+            metrics: &metrics,
+            current: true,
+        }];
+        let input = Input {
+            now: DAY0 + 3 * DAY_MS,
+            copies: &copies,
+            events: &[],
+            rows: &[Row::Availability],
+            backup_every: None,
+        };
+        let days = days(&input, &bounds);
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0].start, DAY0);
+        assert_eq!(days[0].verdicts[&Row::Availability].state, State::Good);
+        assert_eq!(days[1].start, DAY0 + DAY_MS - HOUR);
+        assert_eq!(days[1].verdicts[&Row::Availability].state, State::Incident);
     }
 
     #[test]
@@ -1003,7 +1037,7 @@ mod tests {
             rows: &[Row::Availability],
             backup_every: None,
         };
-        let days = days(&input, DAY0, 1);
+        let days = days(&input, &utc_days(1));
         assert_eq!(
             days[0].verdicts[&Row::Availability],
             Verdict::new(
@@ -1080,7 +1114,7 @@ mod tests {
             rows: &[Row::Memory],
             backup_every: None,
         };
-        let days = days(&input, DAY0, 1);
+        let days = days(&input, &utc_days(1));
         assert_eq!(
             days[0].verdicts[&Row::Memory],
             Verdict::new(
@@ -1115,7 +1149,7 @@ mod tests {
             rows: &[Row::Cpu],
             backup_every: None,
         };
-        let days = days(&input, DAY0, 1);
+        let days = days(&input, &utc_days(1));
         assert_eq!(
             days[0].verdicts[&Row::Cpu],
             Verdict::new(State::Attention, Reason::Throttled { minutes: 80 })

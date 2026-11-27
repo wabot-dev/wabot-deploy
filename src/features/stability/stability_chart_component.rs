@@ -4,11 +4,10 @@
 use std::fmt::Write;
 
 use crate::domain::entities::copy_metric::{CopyMetric, BUCKET_MS};
-use crate::domain::policies::stability::{Reason, Row, DAY_MS};
+use crate::domain::policies::stability::{Reason, Row};
 use crate::features::stability::service_stability_response::{Chart, ServiceStabilityResponse};
 use crate::features::stability::texts::{self, t};
 
-const FULL: usize = (DAY_MS / BUCKET_MS) as usize;
 const SECONDS: f64 = (BUCKET_MS / 1000) as f64;
 const MIB: f64 = 1024.0 * 1024.0;
 const GIB: f64 = 1024.0 * MIB;
@@ -22,8 +21,8 @@ pub struct Plot {
     pub data: serde_json::Value,
 }
 
-fn x(index: usize) -> f64 {
-    (index as f64 + 0.5) / FULL as f64 * 1000.0
+fn x(index: usize, full: usize) -> f64 {
+    (index as f64 + 0.5) / full.max(1) as f64 * 1000.0
 }
 
 fn nice(value: f64) -> f64 {
@@ -46,14 +45,14 @@ fn nice_bytes(value: f64) -> f64 {
     }
 }
 
-fn line(values: &[Option<f64>], y: impl Fn(f64) -> f64) -> String {
+fn line(values: &[Option<f64>], full: usize, y: impl Fn(f64) -> f64) -> String {
     let mut path = String::new();
     let mut run = 0;
     for (index, value) in values.iter().enumerate() {
         match value {
             Some(value) => {
                 let pen = if run == 0 { 'M' } else { 'L' };
-                let _ = write!(path, "{pen}{:.1} {:.2}", x(index), y(*value));
+                let _ = write!(path, "{pen}{:.1} {:.2}", x(index, full), y(*value));
                 run += 1;
             }
             None => {
@@ -70,39 +69,40 @@ fn line(values: &[Option<f64>], y: impl Fn(f64) -> f64) -> String {
     path
 }
 
-fn area(values: &[Option<f64>], y: impl Fn(f64) -> f64) -> String {
+fn area(values: &[Option<f64>], full: usize, y: impl Fn(f64) -> f64) -> String {
     let mut path = String::new();
     let mut open: Option<usize> = None;
     let mut last = 0;
     for (index, value) in values.iter().enumerate() {
         match (value, open) {
             (Some(value), None) => {
-                let _ = write!(path, "M{:.1} 50L{:.1} {:.2}", x(index), x(index), y(*value));
+                let at = x(index, full);
+                let _ = write!(path, "M{at:.1} 50L{at:.1} {:.2}", y(*value));
                 open = Some(index);
                 last = index;
             }
             (Some(value), Some(_)) => {
-                let _ = write!(path, "L{:.1} {:.2}", x(index), y(*value));
+                let _ = write!(path, "L{:.1} {:.2}", x(index, full), y(*value));
                 last = index;
             }
             (None, Some(_)) => {
-                let _ = write!(path, "L{:.1} 50Z", x(last));
+                let _ = write!(path, "L{:.1} 50Z", x(last, full));
                 open = None;
             }
             (None, None) => {}
         }
     }
     if open.is_some() {
-        let _ = write!(path, "L{:.1} 50Z", x(last));
+        let _ = write!(path, "L{:.1} 50Z", x(last, full));
     }
     path
 }
 
-fn steps(limits: &[Option<f64>], y: impl Fn(f64) -> f64) -> String {
+fn steps(limits: &[Option<f64>], full: usize, y: impl Fn(f64) -> f64) -> String {
     let mut path = String::new();
     let mut previous: Option<f64> = None;
     for (index, limit) in limits.iter().enumerate() {
-        let edge = index as f64 / FULL as f64 * 1000.0;
+        let edge = index as f64 / full.max(1) as f64 * 1000.0;
         match (previous, limit) {
             (None, Some(limit)) => {
                 let _ = write!(path, "M{edge:.1} {:.2}", y(*limit));
@@ -128,6 +128,7 @@ fn colour(index: usize) -> &'static str {
 }
 
 struct Lines<'a> {
+    full: usize,
     title: &'static str,
     unit: &'static str,
     series: Vec<Vec<Option<f64>>>,
@@ -166,10 +167,10 @@ fn lines(chart: Lines) -> Plot {
             svg,
             r#"<path class="st-ln {}" d="{}"/>"#,
             colour(index),
-            line(values, y)
+            line(values, chart.full, y)
         );
     }
-    let ceil = steps(&chart.limits, y);
+    let ceil = steps(&chart.limits, chart.full, y);
     if !ceil.is_empty() {
         let _ = write!(svg, r#"<path class="st-ceil" d="{ceil}"/>"#);
     }
@@ -200,6 +201,7 @@ fn lines(chart: Lines) -> Plot {
 }
 
 struct Mirrored {
+    full: usize,
     title: &'static str,
     up: Vec<Option<f64>>,
     down: Vec<Option<f64>>,
@@ -227,10 +229,10 @@ fn mirrored(chart: Mirrored) -> Plot {
     let _ = write!(
         svg,
         r#"<path class="st-area" d="{}{}"/><path class="st-ln st-flow" d="{}"/><path class="st-ln st-flow" d="{}"/></svg>"#,
-        area(&chart.up, up),
-        area(&chart.down, down),
-        line(&chart.up, up),
-        line(&chart.down, down),
+        area(&chart.up, chart.full, up),
+        area(&chart.down, chart.full, down),
+        line(&chart.up, chart.full, up),
+        line(&chart.down, chart.full, down),
     );
     let label = texts::rate(top as u64);
     let measured = chart
@@ -324,6 +326,7 @@ fn peak_of(values: &[Vec<Option<f64>>]) -> f64 {
 
 pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
     let series = &response.series;
+    let full = response.span;
     let today = response
         .strip
         .iter()
@@ -346,6 +349,7 @@ pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
                     false => texts::peak(texts::bytes(peak as u64)),
                 };
                 lines(Lines {
+                    full,
                     title: t("Memory"),
                     unit: "bytes",
                     series: values,
@@ -364,6 +368,7 @@ pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
                     summary.push_str(&format!(" · {}", texts::minutes_at_ceiling(throttled)));
                 }
                 lines(Lines {
+                    full,
                     title: t("CPU"),
                     unit: "millicores",
                     series: values,
@@ -384,6 +389,7 @@ pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
                     texts::rate(peak_of(std::slice::from_ref(&down)) as u64),
                 );
                 mirrored(Mirrored {
+                    full,
                     title: t("Network"),
                     up,
                     down,
@@ -401,6 +407,7 @@ pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
                     _ => texts::bytes(peak_of(&values) as u64),
                 };
                 lines(Lines {
+                    full,
                     title: t("Disk"),
                     unit: "bytes",
                     series: values,
@@ -421,6 +428,7 @@ pub fn plots(response: &ServiceStabilityResponse) -> Vec<Plot> {
                     texts::rate(peak_of(std::slice::from_ref(&down)) as u64),
                 );
                 mirrored(Mirrored {
+                    full,
                     title: t("Disk I/O"),
                     up,
                     down,
@@ -438,7 +446,7 @@ mod tests {
 
     #[test]
     fn a_gap_in_the_readings_breaks_the_line_rather_than_bridging_it() {
-        let drawn = line(&[Some(1.0), Some(2.0), None, Some(3.0), None], |v| v);
+        let drawn = line(&[Some(1.0), Some(2.0), None, Some(3.0), None], 144, |v| v);
         assert_eq!(drawn.matches('M').count(), 2);
         assert!(
             drawn.ends_with("h0"),
@@ -448,9 +456,9 @@ mod tests {
 
     #[test]
     fn a_ceiling_raised_halfway_is_drawn_as_a_step() {
-        let mut limits = vec![Some(200.0); FULL / 2];
-        limits.extend(vec![Some(300.0); FULL / 2]);
-        assert_eq!(steps(&limits, |v| v), "M0.0 200.00H500.0V300.00H1000");
+        let mut limits = vec![Some(200.0); 72];
+        limits.extend(vec![Some(300.0); 72]);
+        assert_eq!(steps(&limits, 144, |v| v), "M0.0 200.00H500.0V300.00H1000");
     }
 
     #[test]

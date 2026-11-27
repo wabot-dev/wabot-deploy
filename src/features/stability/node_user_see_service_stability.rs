@@ -33,6 +33,7 @@ pub async fn run(
         days: request.days,
         day: request.day,
         event: request.event.as_deref(),
+        zone: &request.zone,
     }
     .run(database)
     .await
